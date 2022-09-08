@@ -9,6 +9,13 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+```{r}
+library(tidyverse)
+library(dplyr)
+library(glmnet)
+library(caret)
+```
+
 ## Data Exploration
 
 ```{r}
@@ -48,9 +55,9 @@ toString(row.names(data.frame(assays(se_cytof)$CyTOF)))
 
 ```{r}
 se_metab = bioheart_mae[['Metabolomics']]
-data.frame(assays(se_metab)$loessSampleAllShort_H_batch)
+data.frame(assays(se_metab)$log2Raw)
 assays(se_metab)
-toString(row.names(data.frame(assays(se_metab)$loessSampleAllShort_H_batch)))
+toString(row.names(data.frame(assays(se_metab)$log2Raw)))
 ```
 
 ```{r}
@@ -71,7 +78,68 @@ se_prot = bioheart_mae[['Proteomics']]
 prot_exp = data.frame(assays(se_prot)$raw)
 toString(row.names(data.frame(assays(se_prot)$raw)))
 ```
-```{r}
-data.frame(colData(bioheart_mae))
 
+Are there readings at different ages?
+What are the repeats?
+
+```{r}
+exp = longFormat(bioheart_mae[,,'Proteomics'],
+                 colDataCols = c("age"))
+exp 
+
+unique(exp$rowname)
+```
+
+```{r}
+
+df = data.frame(exp) %>%
+  filter(!grepl("Repeat", colname)) %>%
+  filter(primary != "79") %>%
+  filter(primary != "Pool") %>%
+  filter(primary != "Pool") %>%
+  pivot_wider(id_cols = c(primary, age), names_from = rowname, values_from = value)
+
+# Check duplicates
+#data.frame(exp) %>%
+#  filter(!grepl("Repeat", colname)) %>%
+#  filter(primary != "79") %>%
+#  filter(primary != "Pool") %>%
+#  group_by(primary, age, rowname) %>%
+#  summarise(n = n(), .groups = "drop") %>%
+#  filter(n > 1L)
+
+df
+
+# X and Y datasets
+Y = df %>% 
+    select(age) %>% 
+    #scale(center = TRUE, scale = FALSE) %>% 
+    as.matrix()
+
+X = df %>% 
+    select(-age, -primary) %>% 
+    as.matrix()
+
+# Linear Model
+
+slm = lm(Y ~ X)
+summary(slm)
+
+
+# Model Building : Elastic Net Regression
+control = trainControl(method = "repeatedcv",
+                       number = 5,
+                       repeats = 5,
+                       search = "random",
+                       verboseIter = TRUE)
+
+
+# Training ELastic Net Regression model
+elastic_model = train(age ~ .,
+                      data = cbind(X, Y),
+                      method = "glmnet",
+                      preProcess = c("center", "scale"),
+                      tuneLength = 25,
+                      trControl = control)
+  
 ```
