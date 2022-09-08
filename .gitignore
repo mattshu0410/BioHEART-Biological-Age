@@ -34,3 +34,8 @@ vignettes/*.pdf
 # Temporary files created by R markdown
 *.utf8.md
 *.knit.md
+
+# Data files
+BioCT-DL_20220209.xlsx
+MultiAssayExperiment_20220816.RData
+MultiAssayExperiment_PLM_20210519_ageCorrected.RData

@@ -1,0 +1,77 @@
+---
+title: "BioHEART"
+author: "Matthew Shu"
+date: "16/08/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Data Exploration
+
+```{r}
+load("MultiAssayExperiment_20220816.RData")
+
+```
+
+
+```{r}
+# SummarizedExperiment
+experiments(bioheart_mae)$Metabolomics
+
+# Variable Definitions
+metadata(bioheart_mae)$variable_definition
+
+# Patient Clinical Data
+colData(bioheart_mae)
+```
+
+```{r}
+data.frame(metadata(bioheart_mae)$variable_definition)
+
+metadata(colData(bioheart_mae))
+
+data.frame(colData(bioheart_mae))
+table(bioheart_mae$gender)
+
+upsetSamples(bioheart_mae)
+```
+
+```{r}
+se_cytof = bioheart_mae[['CyTOF']]
+cytof_exp = assays(se_cytof)$CyTOF
+cytof_exp
+toString(row.names(data.frame(assays(se_cytof)$CyTOF)))
+```
+
+```{r}
+se_metab = bioheart_mae[['Metabolomics']]
+data.frame(assays(se_metab)$loessSampleAllShort_H_batch)
+assays(se_metab)
+toString(row.names(data.frame(assays(se_metab)$loessSampleAllShort_H_batch)))
+```
+
+```{r}
+se_lipid_spec = bioheart_mae[['Lipidomics_species']]
+data.frame(assays(se_lipid_spec)$log2conc)
+```
+
+```{r}
+se_lipid_tot = bioheart_mae[['Lipidomics_totals']]
+data.frame(assays(se_lipid_tot)$log2totalsConc)
+
+
+toString(row.names(data.frame(assays(se_lipid_tot)$log2totalsConc)))
+```
+
+```{r}
+se_prot = bioheart_mae[['Proteomics']]
+prot_exp = data.frame(assays(se_prot)$raw)
+toString(row.names(data.frame(assays(se_prot)$raw)))
+```
+```{r}
+data.frame(colData(bioheart_mae))
+
+```
