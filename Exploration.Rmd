@@ -14,6 +14,7 @@ library(tidyverse)
 library(dplyr)
 library(glmnet)
 library(caret)
+library(corrplot)
 ```
 
 ## Data Exploration
@@ -72,6 +73,9 @@ data.frame(assays(se_lipid_tot)$log2totalsConc)
 
 toString(row.names(data.frame(assays(se_lipid_tot)$log2totalsConc)))
 ```
+What is Pool?
+Where there are replicates, I see "Repeat_JY" is that Jean Yang initials? Is the original or repeat the one to use?
+Are there readings at different ages of the same person?
 
 ```{r}
 se_prot = bioheart_mae[['Proteomics']]
@@ -79,16 +83,16 @@ prot_exp = data.frame(assays(se_prot)$raw)
 toString(row.names(data.frame(assays(se_prot)$raw)))
 ```
 
-Are there readings at different ages?
-What are the repeats?
 
 ```{r}
 exp = longFormat(bioheart_mae[,,'Proteomics'],
-                 colDataCols = c("age"))
+                 colDataCols = c("age", "smurfs", "cacs", "cacs_pct", "gensini"))
 exp 
 
 unique(exp$rowname)
 ```
+
+Get a clean dataframe
 
 ```{r}
 
@@ -97,7 +101,10 @@ df = data.frame(exp) %>%
   filter(primary != "79") %>%
   filter(primary != "Pool") %>%
   filter(primary != "Pool") %>%
-  pivot_wider(id_cols = c(primary, age), names_from = rowname, values_from = value)
+  pivot_wider(id_cols = c(primary, age, smurfs, cacs, cacs_pct, gensini), 
+              names_from = rowname, values_from = value) %>%
+  transform(cacs = as.numeric(cacs), cacs_pct = as.numeric(cacs_pct), gensini = as.numeric(gensini))
+
 
 # Check duplicates
 #data.frame(exp) %>%
@@ -108,22 +115,85 @@ df = data.frame(exp) %>%
 #  summarise(n = n(), .groups = "drop") %>%
 #  filter(n > 1L)
 
-df
+```
+
+Simple Linear Model
+
+```{r}
 
 # X and Y datasets
-Y = df %>% 
+y = df %>% 
     select(age) %>% 
     #scale(center = TRUE, scale = FALSE) %>% 
     as.matrix()
 
 X = df %>% 
-    select(-age, -primary) %>% 
+    select(-age, -primary, -smurfs, -cacs, -cacs_pct, -gensini) %>% 
     as.matrix()
 
 # Linear Model
 
 slm = lm(Y ~ X)
 summary(slm)
+
+
+```
+
+
+Correlation Plot
+
+Anything above correlation 90 is detected.
+
+```{r}
+
+
+
+corr_simple <- function(data=df,sig=0.5){
+  #convert data to numeric in order to run correlations
+  #convert to factor first to keep the integrity of the data - each value will become a number rather than turn into NA
+  df_cor <- data %>% mutate_if(is.character, as.factor)
+  df_cor <- df_cor %>% mutate_if(is.factor, as.numeric)
+  #run a correlation and drop the insignificant ones
+  corr <- cor(df_cor)
+  #prepare to drop duplicates and correlations of 1     
+  corr[lower.tri(corr,diag=TRUE)] <- NA 
+  #drop perfect correlations
+  corr[corr == 1] <- NA 
+  #turn into a 3-column table
+  corr <- as.data.frame(as.table(corr))
+  #remove the NA values from above 
+  corr <- na.omit(corr) 
+  #select significant values  
+  corr <- subset(corr, abs(Freq) > sig) 
+  #sort by highest correlation
+  corr <- corr[order(-abs(corr$Freq)),] 
+  #print table
+  print(corr)
+  #turn corr back into matrix in order to plot with corrplot
+  mtx_corr <- reshape2::acast(corr, Var1~Var2, value.var="Freq")
+  
+  #plot correlations visually
+  corrplot(mtx_corr, is.corr=FALSE, tl.col="black", na.label=" ")
+}
+
+histogram(c(cor(X)))
+corr_simple(data.frame(X), sig=0.85)
+
+```
+
+Elastic Model
+
+* Clearly there is correlation between metabolites so we need to penalise complexity
+* Going from 1000 to 260 metabolites
+
+
+```{r}
+
+# Train Test Split
+
+set.seed(2022)
+p = 0.7 
+train = sample(1:nrow(X), nrow(X)*p)
 
 
 # Model Building : Elastic Net Regression
@@ -134,12 +204,118 @@ control = trainControl(method = "repeatedcv",
                        verboseIter = TRUE)
 
 
-# Training ELastic Net Regression model
+# Training Elastic Net Regression model
 elastic_model = train(age ~ .,
-                      data = cbind(X, Y),
+                      data = cbind(X[train,], "age" = y[train,]),
                       method = "glmnet",
-                      preProcess = c("center", "scale"),
                       tuneLength = 25,
                       trControl = control)
-  
+
+coef(elastic_model$finalModel, elastic_model$bestTune$lambda)
+elastic_model
+```
+
+Testing Data Performance
+
+* 0.56 isn't amazing
+
+```{r}
+
+# Testing on Data Left-Out
+elastic_model$bestTune
+X_test = X[-train,]
+y_test = y[-train,]
+
+pred = predict(elastic_model, X_test)
+
+data.frame(
+  RMSE = RMSE(pred, y_test),
+  Rsquare = R2(pred, y_test)
+)
+
+```
+
+Graphing Exploration
+
+Setting up dataframe
+
+```{r}
+
+age_accl = pred-y_test
+
+graph_df = cbind(df[-train,],y_test, pred, age_accl) %>%
+  select(primary, age, smurfs, cacs, cacs_pct, gensini, y_test, pred, age_accl)
+
+```
+
+Proteomic Age vs Chronological Age
+
+```{r}
+mean = mean(graph_df$smurfs)
+
+graph_df %>%
+  filter(is.na(smurfs) == FALSE) %>%
+  ggplot() +
+  aes(x = y_test, y = pred) +
+  geom_point() +
+  labs(
+    x = "Chronological Age",
+    y = "Proteomic Age"
+  ) +
+  theme_bw()
+```
+
+Age Acceleration
+
+```{r}
+
+ggplot(graph_df) +
+  aes(x = age_accl) +
+  geom_histogram(bins = 100) +
+  theme_bw() +
+  labs(
+    x = "Proteomic Age Acceleration",
+    y = "Frequency"
+  )
+
+graph_df = graph_df %>%
+  filter(is.na(cacs_pct) == FALSE)
+
+mid = mean(graph_df$cacs_pct)
+
+graph_df %>%
+  filter(is.na(cacs_pct) == FALSE) %>%
+  ggplot() +
+  aes(x = y_test, y = age_accl, color = cacs_pct) +
+  geom_point() +
+  labs(
+    x = "Chronological Age",
+    y = "Age Acceleration",
+    title = "CACS for Age Acceleration"
+  ) +
+  scale_color_gradient2(midpoint=mid, low="blue", mid="white",
+                     high="red" ) +
+  theme_bw()
+```
+
+```{r}
+
+graph_df = graph_df %>%
+  filter(is.na(gensini) == FALSE)
+
+mid = mean(graph_df$gensini)
+
+graph_df %>%
+  filter(is.na(gensini) == FALSE) %>%
+  ggplot() +
+  aes(x = y_test, y = age_accl, color = gensini) +
+  geom_point() +
+  labs(
+    x = "Chronological Age",
+    y = "Age Acceleration",
+    title = "Gensini for Age Acceleration"
+  ) +
+  scale_color_gradient2(midpoint=mid, low="blue", mid="white",
+                     high="red" ) +
+  theme_bw()
 ```
