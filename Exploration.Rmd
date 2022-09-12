@@ -89,6 +89,7 @@ exp = longFormat(bioheart_mae[,,'Proteomics'],
                  colDataCols = c("age", "smurfs", "cacs", "cacs_pct", "gensini"))
 exp 
 
+
 unique(exp$rowname)
 ```
 
