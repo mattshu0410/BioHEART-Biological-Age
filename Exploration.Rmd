@@ -521,6 +521,11 @@ graph_df %>%
 
 ## Lipidomics
 
+Interestingly, lipidomic species gives a better R^2
+
+* 46 variables used by the Elastic Net Model when using Lipidomic Totals, R^2 = 0.29 
+* 
+
 
 ```{r}
 
@@ -530,6 +535,11 @@ exp = longFormat(bioheart_mae[,,'Lipidomics_species'],
                  colDataCols = c("age", "smurfs", "cacs", "cacs_pct", "gensini"),
                  i = 2L)
 
+exp = longFormat(bioheart_mae[,,'Lipidomics_totals'],
+                 colDataCols = c("age", "smurfs", "cacs", "cacs_pct", "gensini"),
+                 i = 2L)
+
+
 df = data.frame(exp) %>%
   filter(primary != "Pool") %>%
   pivot_wider(id_cols = c(primary, colname, age, smurfs, cacs, cacs_pct, gensini), 
@@ -538,7 +548,7 @@ df = data.frame(exp) %>%
 
 
 
-df
+bioheart_mae[['Lipidomics_species']]
 
 ```
 
