@@ -17,7 +17,7 @@ library(caret)
 library(corrplot)
 library(naniar)
 library(factoextra)
-library(sigFeature)
+#library(sigFeature)
 library(blockForest)
 source("kdm_calc.R")
 
@@ -889,30 +889,113 @@ blockforobj
 
 ### Using Neural Network
 
+iAge
+
 2 fully connected layers with 5 nodes in each layer and tanh activation
 
 ```{r}
 
-data.frame(X_train)
 
 # Creating Model
 model = keras_model_sequential() %>%
-  layer_dense(128, activation = 'tanh') %>%
-  layer_dense(128, activation = 'tanh') %>%
+  layer_dense(256, activation = 'relu') %>%
+  layer_dense(64, activation = 'relu') %>%
   layer_dense(1)
+
+
 
 model %>% compile(
   loss = 'mean_absolute_error',
   optimizer = optimizer_adam(0.001)
 )
 
+```
+
+https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4931851/
+
+I copied an architecture to see if it did better. Pretty BAD.
+
+```{r}
+
+
+# Creating Model
+model = keras_model_sequential() %>%
+  layer_dense(500, activation = 'PReLU',
+              kernel_regularizer = regularizer_l2(0.001)) %>%
+  layer_dropout(rate = 0.2) %>%
+  layer_dense(250, activation = 'PReLU',
+              kernel_regularizer = regularizer_l2(0.001)) %>%
+  layer_dropout(rate = 0.2) %>%
+  layer_dense(100, activation = 'PReLU',
+              kernel_regularizer = regularizer_l2(0.001)) %>%
+  layer_dropout(rate = 0.2) %>%
+  layer_dense(50, activation = 'PReLU',kernel_regularizer = regularizer_l2(0.001)) %>%
+  layer_dropout(rate = 0.2) %>%
+  layer_dense(1)
+
+
+
+model %>% compile(
+  loss = 'mean_squared_error',
+  optimizer = optimizer_adagrad(0.001)
+)
+
+```
+
+L1 Regularisation + Batch Norm
+
+```{r}
+model = keras_model_sequential() %>%
+  
+  # Network architecture with L1 regularization and batch normalization
+  layer_dense(units = 256, activation = "relu",
+              kernel_regularizer = regularizer_l2(0.001)) %>%
+  #layer_batch_normalization() %>%
+  layer_dense(units = 128, activation = "relu", 
+              kernel_regularizer = regularizer_l2(0.001)) %>%
+  #layer_batch_normalization() %>%
+  layer_dense(units = 64, activation = "relu", 
+              kernel_regularizer = regularizer_l2(0.001)) %>%
+  #layer_batch_normalization() %>%
+  layer_dense(units = 1) %>%
+
+  # Backpropagation
+  compile(
+    loss = 'mean_absolute_error',
+    optimizer = optimizer_adam(0.001)
+  )
+```
+
+# Model with Dropout
+
+```{r}
+
+model = keras_model_sequential() %>%
+  
+  # Network architecture with 20% dropout
+  layer_dense(units = 256, activation = "relu") %>%
+  layer_dropout(rate = 0.2) %>%
+  layer_dense(units = 128, activation = "relu") %>%
+  layer_dropout(rate = 0.2) %>%
+  layer_dense(units = 64, activation = "relu") %>%
+  layer_dropout(rate = 0.2) %>%
+  layer_dense(units = 1) %>%
+  
+  # Backpropagation
+  compile(
+    loss = 'mean_absolute_error',
+    optimizer = optimizer_adam(0.001)
+  )
+```
+
+```{r}
 
 # Train Model
 fit1 = model %>%
   fit(
     x = X_train,
     y = y_train,
-    epochs = 50,
+    epochs = 100,
     batch_size = 128,
     validation_split = 0.2,
     verbose = TRUE
@@ -921,10 +1004,18 @@ fit1 = model %>%
 # Model Predict
 pred = predict(model, X_test)
 
+boxplot(abs(pred-y_test))
+
 data.frame(
   RMSE = RMSE(pred, y_test),
   Rsquare = R2(pred, y_test)
 )
+```
+## Autoencoder
+```{r}
+
+library(h2o)
+
 ```
 
 ```{r}
