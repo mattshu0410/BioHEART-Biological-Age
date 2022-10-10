@@ -16,7 +16,19 @@ library(glmnet)
 library(caret)
 library(corrplot)
 library(naniar)
+library(factoextra)
+library(sigFeature)
+library(blockForest)
+source("kdm_calc.R")
+
+# Modeling packages
+library(tensorflow)
+library(keras)         # for fitting DNNs
+library(tfruns)        # for additional grid search & model training functions
+
+
 ```
+
 # Biological Age
 
 ## Data Exploration
@@ -25,7 +37,6 @@ library(naniar)
 load("MultiAssayExperiment_20220816.RData")
 
 ```
-
 
 ```{r}
 # SummarizedExperiment
@@ -75,6 +86,7 @@ data.frame(assays(se_lipid_tot)$log2totalsConc)
 
 toString(row.names(data.frame(assays(se_lipid_tot)$log2totalsConc)))
 ```
+
 ## Proteomic Age
 
 ### Cleaning
@@ -84,7 +96,6 @@ se_prot = bioheart_mae[['Proteomics']]
 prot_exp = data.frame(assays(se_prot)$raw)
 toString(row.names(data.frame(assays(se_prot)$raw)))
 ```
-
 
 ```{r}
 exp = longFormat(bioheart_mae[,,'Proteomics'],
@@ -136,12 +147,11 @@ X = df %>%
 
 # Linear Model
 
-slm = lm(Y ~ X)
+slm = lm(y~ X)
 summary(slm)
 
 
 ```
-
 
 ### Correlation Plot
 
@@ -186,9 +196,10 @@ corr_simple(data.frame(X), sig=0.85)
 
 ### Elastic Model
 
-* Clearly there is correlation between metabolites so we need to penalise complexity
-* Going from 1000 to 260 metabolites
+-   Clearly there is correlation between metabolites so we need to penalise complexity
+-   Going from 1000 to 260 metabolites
 
+R^2 = 0.4896232
 
 ```{r}
 
@@ -220,7 +231,7 @@ elastic_model
 
 ### Testing Data Performance
 
-* 0.56 isn't amazing
+-   0.56 isn't amazing
 
 ```{r}
 
@@ -327,8 +338,7 @@ graph_df %>%
 
 hRUV - Hierarchical Approach to Removal of Unwanted Variation
 
-https://www.biorxiv.org/content/10.1101/2020.12.21.423723v1.full.pdf
-
+<https://www.biorxiv.org/content/10.1101/2020.12.21.423723v1.full.pdf>
 
 `SummarizedExperiment` implements matrix-like behaviour
 
@@ -336,11 +346,11 @@ How to use `wideFormat` and `longFormat` for `SummarizedExperiment` w/ multiple 
 
 `i` is the i-th assay in the `SummarizedExperiment` objects; this provides vector input in the case the the object has more than one assay
 
-https://support.bioconductor.org/p/110228/
+<https://support.bioconductor.org/p/110228/>
 
 Cleaning
 
-* Removed data from pooled samples
+-   Removed data from pooled samples
 
 ```{r}
 
@@ -360,7 +370,13 @@ df
 
 ```
 
+### Elastic Model
+
+
 Elastic model reduces 60 metabolites to 42 metabolites in the Elastic Net model. I think my main concern is that this is targeted.
+
+R^2=0.13
+RMSE 11.8164
 
 ```{r}
 
@@ -432,14 +448,16 @@ graph_df = cbind(df[-train,],y_test, pred, age_accl) %>%
 mean = mean(graph_df$smurfs)
 
 graph_df %>%
-  filter(is.na(smurfs) == FALSE) %>%
+  filter(is.na(cacs_pct) == FALSE) %>%
   ggplot() +
-  aes(x = y_test, y = pred) +
+  aes(x = y_test, y = pred, color = cacs_pct) +
   geom_point() +
   labs(
     x = "Chronological Age",
     y = "Metabolomic Age"
   ) +
+  scale_color_gradient2(midpoint=mid, low="blue", mid="white",
+                     high="red" ) +
   theme_bw()
 
 # Age Acceleration Histogram
@@ -509,7 +527,7 @@ graph_df %>%
   labs(
     x = "Chronological Age",
     y = "Metabolomic Age Acceleration",
-    title = "SMURFs for Age Acceleration"
+    title = "Gensini for Age Acceleration"
   ) +
   scale_color_gradient2(midpoint=mid, low="blue", mid="white",
                      high="red" ) +
@@ -518,14 +536,136 @@ graph_df %>%
 
 ```
 
+### Using PCA and KDM
 
-## Lipidomics
+R^2 = 0.06061582
+RMSE = 12.37645
 
-Interestingly, lipidomic species gives a better R^2
+https://towardsdatascience.com/principal-component-analysis-pca-101-using-r-361f4c53a9ff
+https://online.stat.psu.edu/stat505/lesson/11/11.4#:~:text=We%20use%20the%20correlations%20between,square%20root%20of%20the%20eigenvalue.
+https://stats.stackexchange.com/questions/133149/why-is-variance-instead-of-standard-deviation-the-default-measure-of-informati
 
-* 46 variables used by the Elastic Net Model when using Lipidomic Totals, R^2 = 0.29 
-* 
+```{r}
+pca_df = X[train,]
+pca = prcomp(pca_df)
+summary(pca)
 
+screeplot(pca, type = "l", npcs = 30, main = "Screeplot of the first 30 PCs")
+abline(h = 1, col="red", lty=5)
+legend("topright", legend=c("Eigenvalue = 1"),
+       col=c("red"), lty=5, cex=0.6)
+
+cumpro = cumsum(pca$sdev^2 / sum(pca$sdev^2))
+plot(cumpro[0:50], xlab = "PC #", ylab = "Amount of explained variance", main = "Cumulative variance plot")
+abline(v = 5, col="blue", lty=5)
+# abline(h = 0.63305, col="blue", lty=5)
+abline(h = 0.9, col="red", lty=5)
+legend("topleft", legend=c("Cut-off @ PC5", "90% Explained Variance"),
+       col=c("blue", "red"), lty=5, cex=0.6)
+
+
+```
+
+
+* KDM - uses chronological age, BM are a function of BA and CA.
+
+https://academic.oup.com/biomedgerontology/article/74/Supplement_1/S52/5625183
+
+```{r}
+# PCA Axes for Subjects
+axes = predict(pca, X[train,])
+pca_dat = cbind(X[train,], axes, age = y[train,])
+
+PCA_model = lm(age ~ PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + PC11 + PC12 + PC13 + PC14 + PC15 + PC16 + PC17 + PC18 + PC19 + PC20, data.frame(pca_dat))
+summary(PCA_model)
+
+
+# Test on Test Data
+X_test = X[-train,]
+y_test = y[-train,]
+axes = predict(pca, X_test)
+
+pred = predict(PCA_model, data.frame(axes))
+
+
+data.frame(
+  RMSE = RMSE(pred, y_test),
+  Rsquare = R2(pred, y_test)
+)
+```
+
+
+```{r}
+kdm_calc(
+  pca,
+)
+
+```
+
+### Using Random Forest
+
+Random forests (RF) is a popular tree-based ensemble machine learning tool that is highly data adaptive, applies to “large p, small n” problems, and is able to account for correlation as well as interactions among features.
+
+RMSE = 11.71085	
+R^2 = 0.1377638	
+
+https://www.sciencedirect.com/science/article/pii/S0888754312000626
+
+```{r}
+ntree = 3
+mtry = sqrt(ncol(X))
+
+# Model Building : Random Forest
+control = trainControl(method = "repeatedcv",
+                       number = 5,
+                       repeats = 5,
+                       search = "random",
+                       verbose = TRUE)
+
+rf_model =  train(age ~ .,
+                  data = cbind(X[train,], "age" = y[train,]),
+                  method = 'rf',
+                  tuneLength  = 15, 
+                  trControl = control)
+
+```
+
+```{r}
+
+# Test on Test Data
+X_test = X[-train,]
+y_test = y[-train,]
+
+pred = predict(rf_model, X_test)
+
+data.frame(
+  RMSE = RMSE(pred, y_test),
+  Rsquare = R2(pred, y_test)
+)
+
+```
+
+```{r}
+plot(rf_model)
+
+```
+### Random Block Forest
+OOB prediction error (MSE): 123.0806
+R squared (OOB): 0.1451966 
+
+```{r}
+
+# Not as useful here since this is only a single block so I expect similar results to the random forest
+blockforobj = blockfor(X[train,], y[train,], blocks = list(seq(1:ncol(X[train,]))), num.trees = 100)
+blockforobj
+```
+
+## Lipidomics Age
+
+Interestingly, lipidomic species gives a better R\^2
+
+-   46 variables used by the Elastic Net Model when using Lipidomic Totals, R\^2 = 0.29
+-   700ish variables used, R\^2 = .56, RMSE = 8.34
 
 ```{r}
 
@@ -552,6 +692,9 @@ bioheart_mae[['Lipidomics_species']]
 
 ```
 
+
+### Elastic Regression Approach
+
 ```{r}
 
 # X and Y datasets
@@ -570,6 +713,11 @@ X = df %>%
 set.seed(2022)
 p = 0.7 
 train = sample(1:nrow(X), nrow(X)*p)
+
+X_train = X[train,]
+y_train = y[train,]
+X_test = X[-train,]
+y_test = y[-train,]
 
 
 # Model Building : Elastic Net Regression
@@ -605,9 +753,181 @@ data.frame(
 
 ```
 
+### Using PCA and KDM
+
+The first 5 principal components explain just over 60% of the variance. The standard deviation is the square root of the eigenvalue; variances of PCs are eigenvalues of the covariance matrix.
+
+For Lipidomic Species
+R^2 = 0.226007
+RMSE = 11.10364
+
+https://towardsdatascience.com/principal-component-analysis-pca-101-using-r-361f4c53a9ff
+https://online.stat.psu.edu/stat505/lesson/11/11.4#:~:text=We%20use%20the%20correlations%20between,square%20root%20of%20the%20eigenvalue.
+https://stats.stackexchange.com/questions/133149/why-is-variance-instead-of-standard-deviation-the-default-measure-of-informati
+
+```{r}
+pca_df = X[train,]
+pca = prcomp(pca_df)
+summary(pca)
+
+screeplot(pca, type = "l", npcs = 30, main = "Screeplot of the first 30 PCs")
+abline(h = 1, col="red", lty=5)
+legend("topright", legend=c("Eigenvalue = 1"),
+       col=c("red"), lty=5, cex=0.6)
+
+cumpro = cumsum(pca$sdev^2 / sum(pca$sdev^2))
+plot(cumpro[0:50], xlab = "PC #", ylab = "Amount of explained variance", main = "Cumulative variance plot")
+abline(v = 5, col="blue", lty=5)
+# abline(h = 0.63305, col="blue", lty=5)
+abline(h = 0.9, col="red", lty=5)
+legend("topleft", legend=c("Cut-off @ PC5", "90% Explained Variance"),
+       col=c("blue", "red"), lty=5, cex=0.6)
+
+
+```
+
+
+
+
+```{r}
+# PCA Axes for Subjects
+axes = predict(pca, X[train,])
+pca_dat = cbind(X[train,], axes, age = y[train,])
+
+PCA_model = lm(age ~ PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + PC11 + PC12 + PC13 + PC14 + PC15 + PC16 + PC17 + PC18 + PC19 + PC20, data.frame(pca_dat))
+summary(PCA_model)
+
+
+# Test on Test Data
+X_test = X[-train,]
+y_test = y[-train,]
+axes = predict(pca, X_test)
+
+pred = predict(PCA_model, data.frame(axes))
+
+
+data.frame(
+  RMSE = RMSE(pred, y_test),
+  Rsquare = R2(pred, y_test)
+)
+```
+* KDM - uses chronological age, BM are a function of BA and CA.
+
+https://academic.oup.com/biomedgerontology/article/74/Supplement_1/S52/5625183
+
+```{r}
+kdm_calc(
+  pca,
+)
+
+```
+
+### Using Random Forest
+
+Random forests (RF) is a popular tree-based ensemble machine learning tool that is highly data adaptive, applies to “large p, small n” problems, and is able to account for correlation as well as interactions among features.
+
+RMSE = 11.96586
+R^2 = 0.1051555	
+
+https://www.sciencedirect.com/science/article/pii/S0888754312000626
+
+```{r}
+ntree = 3
+mtry = sqrt(ncol(X))
+
+# Model Building : Random Forest
+control = trainControl(method = "repeatedcv",
+                       number = 5,
+                       repeats = 5,
+                       search = "random",
+                       verbose = TRUE)
+
+rf_model =  train(age ~ .,
+                  data = cbind(X[train,], "age" = y[train,]),
+                  method = 'rf',
+                  tuneLength  = 15, 
+                  trControl = control)
+
+```
 
 ```{r}
 
+# Test on Test Data
+X_test = X[-train,]
+y_test = y[-train,]
+
+pred = predict(rf_model, X_test)
+
+data.frame(
+  RMSE = RMSE(pred, y_test),
+  Rsquare = R2(pred, y_test)
+)
+
+```
+
+### Using Random BlockForest
+
+* Block selection randomization procedure (select subset of all M blocks with equal probability)
+* For each split, we sample fixed numbers of variables from each block separately. More precisely, for m=1,…,M we sample sqrt(p_m) variables from block m.
+
+https://bmcbioinformatics.biomedcentral.com/articles/10.1186/s12859-019-2942-y#
+
+OOB prediction error (MSE): 127.0553 
+R squared (OOB): 0.1061645 
+
+```{r}
+
+# Not as useful here since this is only a single block so I expect similar results to the random forest
+blockforobj = blockfor(X[train,], y[train,], blocks = list(seq(1:ncol(X[train,]))), num.trees = 100)
+
+```
+
+```{r}
+
+blockforobj
+```
+
+### Using Neural Network
+
+2 fully connected layers with 5 nodes in each layer and tanh activation
+
+```{r}
+
+data.frame(X_train)
+
+# Creating Model
+model = keras_model_sequential() %>%
+  layer_dense(128, activation = 'tanh') %>%
+  layer_dense(128, activation = 'tanh') %>%
+  layer_dense(1)
+
+model %>% compile(
+  loss = 'mean_absolute_error',
+  optimizer = optimizer_adam(0.001)
+)
+
+
+# Train Model
+fit1 = model %>%
+  fit(
+    x = X_train,
+    y = y_train,
+    epochs = 50,
+    batch_size = 128,
+    validation_split = 0.2,
+    verbose = TRUE
+  )
+
+# Model Predict
+pred = predict(model, X_test)
+
+data.frame(
+  RMSE = RMSE(pred, y_test),
+  Rsquare = R2(pred, y_test)
+)
+```
+
+```{r}
 
 
 
@@ -620,18 +940,25 @@ graph_df = cbind(df[-train,],y_test, pred, age_accl) %>%
 
 # Graph of Lipidomic Age vs Chronological Age
 
-mean = mean(graph_df$smurfs)
+
+mid = graph_df %>%
+  filter(is.na(cacs_pct) == FALSE) %>%
+  summarise(mean = mean(cacs_pct)) %>%
+  pull()
 
 graph_df %>%
-  filter(is.na(smurfs) == FALSE) %>%
-  ggplot() +
-  aes(x = y_test, y = pred) +
+  filter(is.na(cacs_pct) == FALSE) %>%
+  ggplot() + 
+  geom_abline(intercept = 0, slope = 1) +
+  aes(x = y_test, y = pred, color = cacs_pct) +
   geom_point() +
   labs(
     x = "Chronological Age",
     y = "Lipidomic Age"
   ) +
-  theme_bw()
+  scale_color_gradient2(midpoint=mid, low="blue", mid="white",
+                     high="red" ) +
+  theme_bw() 
 
 # Age Acceleration Histogram
 
@@ -700,7 +1027,7 @@ graph_df %>%
   labs(
     x = "Chronological Age",
     y = "Lipidomic Age Acceleration",
-    title = "SMURFs for Age Acceleration"
+    title = "Gensini for Age Acceleration"
   ) +
   scale_color_gradient2(midpoint=mid, low="blue", mid="white",
                      high="red" ) +
@@ -708,3 +1035,352 @@ graph_df %>%
 
 
 ```
+
+## CYTOF Age
+
+```{r}
+
+
+# Picks the first assay rlmSampleAllShort_H_batch
+exp = longFormat(bioheart_mae[,,'CyTOF'],
+                 colDataCols = c("age", "smurfs", "cacs", "cacs_pct", "gensini"),
+                 i = 1L)
+
+
+df = data.frame(exp) %>%
+  filter(primary != "Pool") %>%
+  pivot_wider(id_cols = c(primary, colname, age, smurfs, cacs, cacs_pct, gensini), 
+              names_from = rowname, values_from = value) %>%
+  transform(cacs = as.numeric(cacs), cacs_pct = as.numeric(cacs_pct), gensini = as.numeric(gensini)) %>%
+  drop_na
+
+
+
+bioheart_mae[['CyTOF']]
+
+```
+
+
+### Elastic Regression Approach
+
+R^2 = 0.2656321
+RMSE = 9.563379
+
+```{r}
+
+# X and Y datasets
+y = df %>% 
+    select(age) %>% 
+    #scale(center = TRUE, scale = FALSE) %>% 
+    as.matrix()
+
+X = df %>% 
+    select(-age, -primary, -smurfs, -cacs, -cacs_pct, -gensini, -colname) %>% 
+    as.matrix()
+
+
+# Train Test Split
+
+set.seed(2022)
+p = 0.7 
+train = sample(1:nrow(X), nrow(X)*p)
+
+
+# Model Building : Elastic Net Regression
+control = trainControl(method = "repeatedcv",
+                       number = 5,
+                       repeats = 5,
+                       search = "random",
+                       verboseIter = TRUE)
+
+
+# Training Elastic Net Regression model
+elastic_model = train(age ~ .,
+                      data = cbind(X[train,], "age" = y[train,]),
+                      method = "glmnet",
+                      tuneLength = 25,
+                      trControl = control)
+
+coef(elastic_model$finalModel, elastic_model$bestTune$lambda)
+elastic_model
+
+# Testing on Data Left-Out
+elastic_model$bestTune
+X_test = X[-train,]
+y_test = y[-train,]
+
+pred = predict(elastic_model, X_test)
+
+data.frame(
+  RMSE = RMSE(pred, y_test),
+  Rsquare = R2(pred, y_test)
+)
+
+
+```
+
+### Using PCA and KDM
+
+The first 14 principal components explain just 90% of the variance. The standard deviation is the square root of the eigenvalue; variances of PCs are eigenvalues of the covariance matrix.
+
+R^2 = 0.1443909
+RMSE = 10.75873	
+
+https://towardsdatascience.com/principal-component-analysis-pca-101-using-r-361f4c53a9ff
+https://online.stat.psu.edu/stat505/lesson/11/11.4#:~:text=We%20use%20the%20correlations%20between,square%20root%20of%20the%20eigenvalue.
+https://stats.stackexchange.com/questions/133149/why-is-variance-instead-of-standard-deviation-the-default-measure-of-informati
+
+```{r}
+pca_df = X[train,]
+pca = prcomp(pca_df)
+summary(pca)
+
+screeplot(pca, type = "l", npcs = 30, main = "Screeplot of the first 30 PCs")
+abline(h = 1, col="red", lty=5)
+legend("topright", legend=c("Eigenvalue = 1"),
+       col=c("red"), lty=5, cex=0.6)
+
+cumpro = cumsum(pca$sdev^2 / sum(pca$sdev^2))
+plot(cumpro[0:50], xlab = "PC #", ylab = "Amount of explained variance", main = "Cumulative variance plot")
+abline(v = 5, col="blue", lty=5)
+# abline(h = 0.63305, col="blue", lty=5)
+abline(h = 0.9, col="red", lty=5)
+legend("topleft", legend=c("Cut-off @ PC5", "90% Explained Variance"),
+       col=c("blue", "red"), lty=5, cex=0.6)
+
+
+```
+
+
+* KDM - uses chronological age, BM are a function of BA and CA.
+
+https://academic.oup.com/biomedgerontology/article/74/Supplement_1/S52/5625183
+
+```{r}
+# PCA Axes for Subjects
+axes = predict(pca, X[train,])
+pca_dat = cbind(X[train,], axes, age = y[train,])
+
+PCA_model = lm(age ~ PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + PC11 + PC12 + PC13 + PC14, data.frame(pca_dat))
+summary(PCA_model)
+
+
+# Test on Test Data
+X_test = X[-train,]
+y_test = y[-train,]
+axes = predict(pca, X_test)
+
+pred = predict(PCA_model, data.frame(axes))
+
+
+data.frame(
+  RMSE = RMSE(pred, y_test),
+  Rsquare = R2(pred, y_test)
+)
+```
+
+
+```{r}
+kdm_calc(
+  pca,
+)
+
+```
+
+### Using Random Forest
+
+Random forests (RF) is a popular tree-based ensemble machine learning tool that is highly data adaptive, applies to “large p, small n” problems, and is able to account for correlation as well as interactions among features.
+
+RMSE = 10.76234
+R^2 = 0.1105379
+
+https://www.sciencedirect.com/science/article/pii/S0888754312000626
+
+```{r}
+ntree = 3
+mtry = sqrt(ncol(X))
+
+# Model Building : Random Forest
+control = trainControl(method = "repeatedcv",
+                       number = 5,
+                       repeats = 5,
+                       search = "random",
+                       verbose = TRUE)
+
+rf_model =  train(age ~ .,
+                  data = cbind(X[train,], "age" = y[train,]),
+                  method = 'rf',
+                  tuneLength  = 15, 
+                  trControl = control)
+
+```
+
+```{r}
+
+# Test on Test Data
+X_test = X[-train,]
+y_test = y[-train,]
+
+pred = predict(rf_model, X_test)
+
+data.frame(
+  RMSE = RMSE(pred, y_test),
+  Rsquare = R2(pred, y_test)
+)
+
+```
+
+### Using Random BlockForest
+
+* Block selection randomization procedure (select subset of all M blocks with equal probability)
+* For each split, we sample fixed numbers of variables from each block separately. More precisely, for m=1,…,M we sample sqrt(p_m) variables from block m.
+
+https://bmcbioinformatics.biomedcentral.com/articles/10.1186/s12859-019-2942-y#
+
+OOB prediction error (MSE): 130.6509 
+R squared (OOB): 0.1818328 
+
+```{r}
+
+# Not as useful here since this is only a single block so I expect similar results to the random forest
+blockforobj = blockfor(X[train,], y[train,], blocks = list(seq(1:ncol(X[train,]))), num.trees = 100)
+
+```
+
+```{r}
+
+blockforobj
+```
+
+## Combined
+
+I want to see how the prediction improves if I use a BlockForest on Proteomic, Metabolomic and Lipidomics. In theory it should capture the interaction effects between different omics data.
+
+### Using Random BlockForest
+
+* Block selection randomization procedure (select subset of all M blocks with equal probability)
+* For each split, we sample fixed numbers of variables from each block separately. More precisely, for m=1,…,M we sample sqrt(p_m) variables from block m.
+
+https://bmcbioinformatics.biomedcentral.com/articles/10.1186/s12859-019-2942-y#
+
+All 3 Experiments
+* OOB prediction error (MSE): 119.0885
+* R squared (OOB): 0.2112567
+
+Lipidomics + Proteomic Experiments
+* OOB prediction error (MSE): 111.0757
+* R squared (OOB): 0.2219357
+
+```{r}
+exp1 = longFormat(bioheart_mae[,,'Metabolomics'], # Does not do well
+                 colDataCols = c("age", "smurfs", "cacs", "cacs_pct", "gensini"),
+                 i = 3L)
+
+
+exp2 = longFormat(bioheart_mae[,,'Lipidomics_totals'], # Does well
+                 colDataCols = c("age", "smurfs", "cacs", "cacs_pct", "gensini"),
+                 i = 2L)
+
+exp3 = longFormat(bioheart_mae[,,'Proteomics'], # Does well
+                 colDataCols = c("age", "smurfs", "cacs", "cacs_pct", "gensini"))
+
+exp1_df = data.frame(exp1) %>%
+  filter(primary != "Pool") %>%
+  pivot_wider(id_cols = c(primary, colname, age, smurfs, cacs, cacs_pct, gensini), 
+              names_from = rowname, values_from = value) %>%
+  transform(cacs = as.numeric(cacs), cacs_pct = as.numeric(cacs_pct), gensini = as.numeric(gensini))
+
+
+exp2_df = data.frame(exp2) %>%
+  filter(primary != "Pool") %>%
+  pivot_wider(id_cols = c(primary, colname, age, smurfs, cacs, cacs_pct, gensini), 
+              names_from = rowname, values_from = value) %>%
+  transform(cacs = as.numeric(cacs), cacs_pct = as.numeric(cacs_pct), gensini = as.numeric(gensini))
+
+exp3_df = data.frame(exp3) %>%
+  filter(!grepl("Repeat", colname)) %>%
+  filter(primary != "79") %>%
+  filter(primary != "Pool") %>%
+  filter(primary != "Pool") %>%
+  pivot_wider(id_cols = c(primary, age, smurfs, cacs, cacs_pct, gensini), 
+              names_from = rowname, values_from = value) %>%
+  transform(cacs = as.numeric(cacs), cacs_pct = as.numeric(cacs_pct), gensini = as.numeric(gensini))
+
+
+
+exp1_df
+exp2_df
+exp3_df
+
+merged_df = inner_join(exp1_df, exp2_df, by=c('primary', 'colname', 'age', 'smurfs', 'cacs', 'cacs_pct', 'gensini')) %>%
+  inner_join(exp3_df, by=c('primary', 'age', 'smurfs', 'cacs', 'cacs_pct', 'gensini'))
+
+lipid_prot_merged_df = inner_join(exp2_df, exp3_df, by=c('primary', 'age', 'smurfs', 'cacs', 'cacs_pct', 'gensini'))
+```
+
+```{r}
+# X and Y datasets
+y = lipid_prot_merged_df %>% 
+    select(age) %>% 
+    #scale(center = TRUE, scale = FALSE) %>% 
+    as.matrix()
+
+X = lipid_prot_merged_df %>% 
+    select(-age, -primary, -smurfs, -cacs, -cacs_pct, -gensini, -colname) %>% 
+    as.matrix()
+
+# Train Test Split
+set.seed(2022)
+p = 0.7 
+train = sample(1:nrow(X), nrow(X)*p)
+
+X_train =  X[train,]
+y_train = y[train,]
+X_test = X[-train,]
+y_test = y[-train,]
+
+```
+
+```{r}
+
+# Setting up blocks
+exp1_col = length(unique(exp1$rowname))
+exp2_col = length(unique(exp2$rowname))
+exp3_col = length(unique(exp3$rowname))
+blocks = rep(1:2, times=c(exp2_col, exp3_col))
+blocks = lapply(1:2, function(x) which(blocks==x))
+
+
+```
+
+```{r}
+
+# Not as useful here since this is only a single block so I expect similar results to the random forest
+blockforobj = blockfor(X_train, y_train, blocks = blocks, num.trees = 100)
+
+```
+
+```{r}
+
+blockforobj
+```
+
+## Junk Code
+
+### Non-Linear SVM-RFE
+
+* Uses a non-linear kernel
+* Recursive Feature Elimination, filters for greatest importance
+* Create predictive rules for data that cannot be classified by linear decision functions
+
+https://bmcbioinformatics.biomedcentral.com/articles/10.1186/s12859-018-2451-4
+
+
+(1) A SVM model was fitted using the specified differential metabolites as independent variables and grouping information as dependent variables; 
+(2) Calculate the importance weight of each metabolite; 
+(3) If the number of remaining metabolites is less than the specified number of metabolites, end the screening and return the importance weight of each metabolite; 
+(4) Eliminate the metabolites with the lowest weight; 
+(5) Repeat (1)–(4)
+
+https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7169426/
+https://www.ncbi.nlm.nih.gov/pmc/articles/PMC9222502/
