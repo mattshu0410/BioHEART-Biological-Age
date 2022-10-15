@@ -710,7 +710,6 @@ X = df %>%
 
 # Train Test Split
 
-set.seed(2022)
 p = 0.7 
 train = sample(1:nrow(X), nrow(X)*p)
 
@@ -729,7 +728,7 @@ control = trainControl(method = "repeatedcv",
 
 
 # Training Elastic Net Regression model
-elastic_model = train(age ~ .,
+elastic_model = caret::train(age ~ .,
                       data = cbind(X[train,], "age" = y[train,]),
                       method = "glmnet",
                       tuneLength = 25,
@@ -744,6 +743,8 @@ X_test = X[-train,]
 y_test = y[-train,]
 
 pred = predict(elastic_model, X_test)
+
+boxplot(abs(pred-y_test))
 
 data.frame(
   RMSE = RMSE(pred, y_test),
@@ -887,6 +888,34 @@ blockforobj = blockfor(X[train,], y[train,], blocks = list(seq(1:ncol(X[train,])
 blockforobj
 ```
 
+### Using XGBoost
+
+```{r}
+library(xgboost)
+xgb_train = xgb.DMatrix(data = X_train, label = y_train)
+xgb_test = xgb.DMatrix(data = X_test, label = y_test)
+
+# Watchlist
+watchlist = list(train=xgb_train, test=xgb_test)
+
+
+#fit XGBoost model
+model = xgb.train(data = xgb_train, max.depth = 3, watchlist=watchlist, nrounds = 100)
+
+#define final model
+model_xgboost = xgboost(data = xgb_train, max.depth = 3, nrounds = 65, verbose = 0)
+summary(model_xgboost)
+pred = predict(model_xgboost, xgb_test)
+
+boxplot(abs(pred-y_test))
+
+data.frame(
+  RMSE = RMSE(pred, y_test),
+  Rsquare = R2(pred, y_test)
+)
+
+```
+
 ### Using Neural Network
 
 iAge
@@ -936,7 +965,7 @@ model = keras_model_sequential() %>%
 
 
 model %>% compile(
-  loss = 'mean_squared_error',
+  loss = 'mean_absolute_error',
   optimizer = optimizer_adagrad(0.001)
 )
 
@@ -966,7 +995,8 @@ model = keras_model_sequential() %>%
   )
 ```
 
-# Model with Dropout
+
+Model with Dropout
 
 ```{r}
 
@@ -1011,12 +1041,7 @@ data.frame(
   Rsquare = R2(pred, y_test)
 )
 ```
-## Autoencoder
-```{r}
 
-library(h2o)
-
-```
 
 ```{r}
 
