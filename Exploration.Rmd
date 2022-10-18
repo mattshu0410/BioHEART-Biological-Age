@@ -1366,6 +1366,24 @@ graph_df %>%
                      high="red" ) +
   theme_bw()
 
+# People who have low CACS score but high SMURFs
+graph_df %>%
+  mutate(cac_present = case_when(
+    cacs_pct>0 ~ "present",
+    cacs_pct==0 ~ "absent"
+  )) %>%
+  ggplot() +
+  aes(x = y_test, y = age_accl, color = smurfs, shape=cac_present) +
+  geom_point() +
+    labs(
+      x = "Chronological Age",
+      y = "Lipidomic Age Acceleration",
+      title = "Resilient Individuals for Age Acceleration"
+    ) + 
+  scale_color_gradient2(midpoint=0, low="blue",
+                     high="red" ) +
+  theme_bw()
+
 
 ```
 
@@ -1832,7 +1850,6 @@ X = metab_lipid_prot_merged_df %>%
 
 ```{r}
 # Train Test Split
-set.seed(2022)
 p = 0.7 
 train = sample(1:nrow(X), nrow(X)*p)
 
@@ -1847,6 +1864,48 @@ y_test = y[-train,]
 
 With 251 final variables
 R2: 8.332503	RMSE: 0.5935032	MAE: 6.395322	
+
+```{r}
+
+
+# Model Building : Elastic Net Regression
+control = trainControl(method = "repeatedcv",
+                       number = 5,
+                       repeats = 5,
+                       search = "random",
+                       verboseIter = TRUE)
+
+
+# Training Elastic Net Regression model
+elastic_model = caret::train(age ~ .,
+                             data = cbind(X[train,], "age" = y[train,]),
+                             method = "glmnet",
+                             tuneLength = 25,
+                             trControl = control)
+
+
+elastic_model
+
+# Number of Coefficients
+coef_matrix = coef(elastic_model$finalModel, elastic_model$bestTune$lambda)
+coef_matrix
+length(as.numeric(coef_matrix)[as.numeric(coef_matrix) != 0])
+
+# Testing on Data Left-Out
+elastic_model$bestTune
+X_test = X[-train,]
+y_test = y[-train,]
+
+pred = predict(elastic_model, X_test)
+
+data.frame(
+  RMSE = RMSE(pred, y_test),
+  Rsquare = R2(pred, y_test),
+  MAE = MAE(pred, y_test)
+)
+
+
+```
 
 
 
@@ -1868,8 +1927,8 @@ Lipidomics + Proteomic Experiments \* OOB prediction error (MSE): 111.0757 \* R 
 exp1_col = length(unique(exp1$rowname))
 exp2_col = length(unique(exp2$rowname))
 exp3_col = length(unique(exp3$rowname))
-blocks = rep(1:2, times=c(exp2_col, exp3_col))
-blocks = lapply(1:2, function(x) which(blocks==x))
+blocks = rep(1:3, times=c(exp1_col, exp2_col, exp3_col))
+blocks = lapply(1:3, function(x) which(blocks==x))
 
 
 ```
@@ -1877,27 +1936,43 @@ blocks = lapply(1:2, function(x) which(blocks==x))
 ```{r}
 
 # Not as useful here since this is only a single block so I expect similar results to the random forest
-blockforobj = blockfor(X_train, y_train, blocks = blocks, num.trees = 100)
+blockforobj = blockfor(X_train, y_train, blocks = blocks, num.trees = 300)
 
 ```
 
 ```{r}
 
-blockforobj
+blockforobj$forest
+
+pred = predict(blockforobj$forest, X_test)
+
+
+data.frame(
+  RMSE = RMSE(pred$predictions, y_test),
+  Rsquare = R2(pred$predictions, y_test),
+  MAE = MAE(pred$predictions, y_test)
+)
 ```
 
 
 ### Graphs
+
+This paper here indicates what is resiliency and absence of CAC.
+
+https://www.ahajournals.org/doi/full/10.1161/CIRCULATIONAHA.120.049057?cookieSet=1
+
 
 ```{r}
 
 
 
 # Calculating Age Acceleration
+# negative age_accl means younger than chronological
+# positive age_accl means older than chronological
 
 age_accl = pred-y_test
 
-graph_df = cbind(metab_lipid_prot_cytof_merged_df[-train,],y_test, pred, age_accl) %>%
+graph_df = cbind(metab_lipid_prot_merged_df[-train,],y_test, pred, age_accl) %>%
   select(primary, age, smurfs, cacs, cacs_pct, gensini, y_test, pred, age_accl)
 
 # Graph of Proteomic, Metabolomic and Lipidomics Age vs Chronological Age
@@ -1915,7 +1990,7 @@ graph_df %>%
   geom_point() +
   labs(
     x = "Chronological Age",
-    y = "Lipidomic Age"
+    y = "PML Age"
   ) +
   scale_color_gradient2(midpoint=mid, low="blue", mid="white",
                      high="red" ) +
@@ -1928,7 +2003,7 @@ ggplot(graph_df) +
   geom_histogram(bins = 100) +
   theme_bw() +
   labs(
-    x = "Lipidomic Age Acceleration",
+    x = "PML Age Acceleration",
     y = "Frequency"
   )
 
@@ -1947,7 +2022,7 @@ graph_df %>%
   geom_point() +
   labs(
     x = "Chronological Age",
-    y = "Lipidomic Age Acceleration",
+    y = "PML Age Acceleration",
     title = "CACS for Age Acceleration"
   ) +
   scale_color_gradient2(midpoint=mid, low="blue", mid="white",
@@ -1964,7 +2039,7 @@ graph_df %>%
   geom_point() +
   labs(
     x = "Chronological Age",
-    y = "Lipidomic Age Acceleration",
+    y = "PML Age Acceleration",
     title = "SMURFs for Age Acceleration"
   ) +
   scale_color_gradient2(midpoint=mid, low="blue", mid="white",
@@ -1987,13 +2062,33 @@ graph_df %>%
   geom_point() +
   labs(
     x = "Chronological Age",
-    y = "Lipidomic Age Acceleration",
+    y = "PML Age Acceleration",
     title = "Gensini for Age Acceleration"
   ) +
   scale_color_gradient2(midpoint=mid, low="blue", mid="white",
                      high="red" ) +
   theme_bw()
 
+library(plotly)
+in# People who have low CACS score but high SMURFs
+graph = graph_df %>%
+  mutate(cac_present = case_when(
+    cacs_pct>0 ~ "present",
+    cacs_pct==0 ~ "absent"
+  )) %>%
+  ggplot() +
+  aes(x = y_test, y = age_accl, color = smurfs, shape=cac_present) +
+  geom_point() +
+    labs(
+      x = "Chronological Age",
+      y = "PML Age Acceleration",
+      title = "Resilient Individuals for Age Acceleration"
+    ) + 
+  scale_color_gradient2(low="blue",
+                     high="red" ) +
+  theme_bw()
+
+ggplotly(graph)
 
 ```
 
