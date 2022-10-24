@@ -26,6 +26,7 @@ library(tensorflow)
 library(keras)         # for fitting DNNs
 library(tfruns)        # for additional grid search & model training functions
 
+library(boot)
 
 ```
 
@@ -35,7 +36,7 @@ library(tfruns)        # for additional grid search & model training functions
 
 ```{r}
 load("MultiAssayExperiment_20220816.RData")
-
+load("FRS_data.RData")
 ```
 
 ```{r}
@@ -47,6 +48,9 @@ metadata(bioheart_mae)$variable_definition
 
 # Patient Clinical Data
 colData(bioheart_mae)
+
+# FRS
+dat_FRS
 ```
 
 ```{r}
@@ -87,6 +91,49 @@ data.frame(assays(se_lipid_tot)$log2totalsConc)
 toString(row.names(data.frame(assays(se_lipid_tot)$log2totalsConc)))
 ```
 
+## Functions
+
+```{r}
+
+
+# Takes a X_test, y_test, model and n (bootstrap samples)
+bootstrap_metric = function(X, y, model, n) {
+  metric = data.frame(RMSE=double(), R2 = double(), MAE = double())
+  print(metric)
+  for (i in c(1:n)) {
+    indices = sample(nrow(X), size=nrow(X), replace=TRUE)
+    bs_X = X[indices,]
+    bs_y = y[indices]
+    pred = predict(model, bs_X)
+    metric = rbind(metric, 
+                   cbind(RMSE = RMSE(pred, bs_y), 
+                         R2 = R2(pred, bs_y), 
+                         MAE = MAE(pred, bs_y)))
+  }
+  pred = predict(model, X)
+  a = metric
+  df = cbind(
+        rbind(RMSE = RMSE(pred, y), Rsquare = R2(pred, y), MAE = MAE(pred, y)),
+        rbind(
+          c(LB = mean(a$RMSE)-1.96*sd(a$RMSE), UB = mean(a$RMSE)+1.96*sd(a$RMSE)),
+          c(LB = mean(a$R2)-1.96*sd(a$R2), UB = mean(a$R2)+1.96*sd(a$R2)),
+          c(LB = mean(a$MAE)-1.96*sd(a$MAE), UB = mean(a$MAE)+1.96*sd(a$MAE))
+        )
+      )
+  df = round(df, 2)
+  return(
+    df
+  )
+}
+
+
+bootstrap_metric(X_test, y_test, elastic_model, 200)
+
+
+
+
+```
+
 ## Proteomic Age
 
 ### Cleaning
@@ -110,6 +157,20 @@ Get a clean dataframe
 
 ```{r}
 
+# DATASET w/ FRS
+df = data.frame(exp) %>%
+  filter(!grepl("Repeat", colname)) %>%
+  filter(primary != "79") %>%
+  filter(primary != "Pool") %>%
+  filter(primary != "Pool") %>%
+  pivot_wider(id_cols = c(primary, age, smurfs, cacs, cacs_pct, gensini), 
+              names_from = rowname, values_from = value) %>%
+  transform(primary = as.numeric(primary), cacs = as.numeric(cacs), cacs_pct = as.numeric(cacs_pct), gensini = as.numeric(gensini)) %>%
+  left_join(dat_FRS %>%
+              select(record_id, cvd_FRS, chd_FRS),
+            by = c("primary"="record_id"))
+
+# DATASET w/ NO FRS
 df = data.frame(exp) %>%
   filter(!grepl("Repeat", colname)) %>%
   filter(primary != "79") %>%
@@ -118,7 +179,6 @@ df = data.frame(exp) %>%
   pivot_wider(id_cols = c(primary, age, smurfs, cacs, cacs_pct, gensini), 
               names_from = rowname, values_from = value) %>%
   transform(cacs = as.numeric(cacs), cacs_pct = as.numeric(cacs_pct), gensini = as.numeric(gensini))
-
 
 # Check duplicates
 #data.frame(exp) %>%
@@ -219,12 +279,11 @@ control = trainControl(method = "repeatedcv",
 
 
 # Training Elastic Net Regression model
-elastic_model = train(age ~ .,
-                      data = cbind(X[train,], "age" = y[train,]),
-                      method = "glmnet",
-                      tuneLength = 25,
-                      trControl = control)
-
+elastic_model = caret::train(age ~ .,
+            data = cbind(X[train,], "age" = y[train,]),
+            method = "glmnet",
+            tuneLength = 25,
+            trControl = control)
 coef(elastic_model$finalModel, elastic_model$bestTune$lambda)
 elastic_model
 ```
@@ -240,7 +299,120 @@ elastic_model$bestTune
 X_test = X[-train,]
 y_test = y[-train,]
 
-pred = predict(elastic_model, X_test)
+metrics = bootstrap_metric(X_test, y_test, elastic_model, 200)
+paste("(",as.character(metrics[2,2]),"-",as.character(metrics[2,3]), ")", sep="")
+paste("(",as.character(metrics[3,2]),"-",as.character(metrics[3,3]), ")", sep="")
+```
+
+### Using PCA
+
+```{r}
+pca_df = X[train,]
+pca = prcomp(pca_df)
+summary(pca)
+
+screeplot(pca, type = "l", npcs = 30, main = "Screeplot of the first 30 PCs")
+abline(h = 1, col="red", lty=5)
+legend("topright", legend=c("Eigenvalue = 1"),
+       col=c("red"), lty=5, cex=0.6)
+
+cumpro = cumsum(pca$sdev^2 / sum(pca$sdev^2))
+plot(cumpro[0:50], xlab = "PC #", ylab = "Amount of explained variance", main = "Cumulative variance plot")
+abline(v = 5, col="blue", lty=5)
+# abline(h = 0.63305, col="blue", lty=5)
+abline(h = 0.9, col="red", lty=5)
+legend("topleft", legend=c("Cut-off @ PC5", "90% Explained Variance"),
+       col=c("blue", "red"), lty=5, cex=0.6)
+
+
+```
+
+```{r}
+# PCA Axes for Subjects
+axes = predict(pca, X[train,])
+pca_dat = cbind(X[train,], axes, age = y[train,])
+
+PCA_model = lm(age ~ PC1 + PC2 + PC3 + PC4, data.frame(pca_dat))
+summary(PCA_model)
+
+
+# Test on Test Data
+X_test = X[-train,]
+y_test = y[-train,]
+axes = predict(pca, X_test)
+
+pred = predict(PCA_model, data.frame(axes))
+
+
+data.frame(
+  RMSE = RMSE(pred, y_test),
+  Rsquare = R2(pred, y_test)
+)
+
+metrics = bootstrap_metric(data.frame(axes), y_test, PCA_model, 200)
+paste(as.character(metrics[2,1])," (",as.character(metrics[2,2]),"-",as.character(metrics[2,3]), ")", sep="")
+paste(as.character(metrics[3,1])," (",as.character(metrics[3,2]),"-",as.character(metrics[3,3]), ")", sep="")
+```
+### Using Random Forest
+
+Random forests (RF) is a popular tree-based ensemble machine learning tool that is highly data adaptive, applies to "large p, small n" problems, and is able to account for correlation as well as interactions among features.
+
+
+<https://www.sciencedirect.com/science/article/pii/S0888754312000626>
+
+```{r}
+ntree = 3
+mtry = sqrt(ncol(X))
+
+# Model Building : Random Forest
+control = trainControl(method = "repeatedcv",
+                       number = 5,
+                       repeats = 5,
+                       search = "random",
+                       verbose = TRUE)
+
+rf_model =  caret::train(age ~ .,
+                         data = cbind(X[train,], "age" = y[train,]),
+                         method = 'rf',
+                         tuneLength  = 15, 
+                         trControl = control)
+
+```
+
+```{r}
+
+# Test on Test Data
+X_test = X[-train,]
+y_test = y[-train,]
+
+pred = predict(rf_model, X_test)
+
+metrics = bootstrap_metric(X_test, y_test, rf_model, 200)
+paste(as.character(metrics[2,1])," (",as.character(metrics[2,2]),"-",as.character(metrics[2,3]), ")", sep="")
+paste(as.character(metrics[3,1])," (",as.character(metrics[3,2]),"-",as.character(metrics[3,3]), ")", sep="")
+
+```
+
+### Using XGBoost
+
+```{r}
+library(xgboost)
+xgb_train = xgb.DMatrix(data = X_train, label = y_train)
+xgb_test = xgb.DMatrix(data = X_test, label = y_test)
+
+# Watchlist
+watchlist = list(train=xgb_train, test=xgb_test)
+
+
+#fit XGBoost model
+model = xgb.train(data = xgb_train, max.depth = 3, watchlist=watchlist, nrounds = 100)
+
+#define final model
+model_xgboost = xgboost(data = xgb_train, max.depth = 3, nrounds = 65, verbose = 0)
+summary(model_xgboost)
+pred = predict(model_xgboost, xgb_test)
+
+boxplot(abs(pred-y_test))
 
 data.frame(
   RMSE = RMSE(pred, y_test),
@@ -431,11 +603,9 @@ y_test = y[-train,]
 
 pred = predict(elastic_model, X_test)
 
-data.frame(
-  RMSE = RMSE(pred, y_test),
-  Rsquare = R2(pred, y_test)
-)
-
+metrics = bootstrap_metric(X_test, y_test, elastic_model, 200)
+paste(as.character(metrics[2,1])," (",as.character(metrics[2,2]),"-",as.character(metrics[2,3]), ")", sep="")
+paste(as.character(metrics[3,1])," (",as.character(metrics[3,2]),"-",as.character(metrics[3,3]), ")", sep="")
 
 ```
 
@@ -475,7 +645,7 @@ legend("topleft", legend=c("Cut-off @ PC5", "90% Explained Variance"),
 axes = predict(pca, X[train,])
 pca_dat = cbind(X[train,], axes, age = y[train,])
 
-PCA_model = lm(age ~ PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + PC11 + PC12 + PC13 + PC14 + PC15 + PC16 + PC17 + PC18 + PC19 + PC20, data.frame(pca_dat))
+PCA_model = lm(age ~ PC1 + PC2 + PC3 + PC4 + PC5, data.frame(pca_dat))
 summary(PCA_model)
 
 
@@ -486,11 +656,9 @@ axes = predict(pca, X_test)
 
 pred = predict(PCA_model, data.frame(axes))
 
-
-data.frame(
-  RMSE = RMSE(pred, y_test),
-  Rsquare = R2(pred, y_test)
-)
+metrics = bootstrap_metric(data.frame(axes), y_test,PCA_model, 200)
+paste(as.character(metrics[2,1])," (",as.character(metrics[2,2]),"-",as.character(metrics[2,3]), ")", sep="")
+paste(as.character(metrics[3,1])," (",as.character(metrics[3,2]),"-",as.character(metrics[3,3]), ")", sep="")
 ```
 
 ```{r}
@@ -509,7 +677,7 @@ RMSE = 11.29 R\^2 = 0.22
 <https://www.sciencedirect.com/science/article/pii/S0888754312000626>
 
 ```{r}
-ntree = 3
+ntree = 500
 mtry = sqrt(ncol(X))
 
 # Model Building : Random Forest
@@ -1794,14 +1962,32 @@ exp1_df = data.frame(exp1) %>%
   filter(primary != "Pool") %>%
   pivot_wider(id_cols = c(primary, colname, age, smurfs, cacs, cacs_pct, gensini), 
               names_from = rowname, values_from = value) %>%
-  transform(cacs = as.numeric(cacs), cacs_pct = as.numeric(cacs_pct), gensini = as.numeric(gensini))
+  transform(
+    primary = as.numeric(primary), 
+    cacs = as.numeric(cacs), 
+    cacs_pct = as.numeric(cacs_pct), 
+    gensini = as.numeric(gensini)
+    ) %>%
+  left_join(dat_FRS %>% select(record_id, cvd_FRS, chd_FRS), 
+            by = c("primary"="record_id"))
 
+
+  
 
 exp2_df = data.frame(exp2) %>%
   filter(primary != "Pool") %>%
   pivot_wider(id_cols = c(primary, colname, age, smurfs, cacs, cacs_pct, gensini), 
               names_from = rowname, values_from = value) %>%
-  transform(cacs = as.numeric(cacs), cacs_pct = as.numeric(cacs_pct), gensini = as.numeric(gensini))
+  transform(
+    primary = as.numeric(primary), 
+    cacs = as.numeric(cacs), 
+    cacs_pct = as.numeric(cacs_pct), 
+    gensini = as.numeric(gensini)
+    ) %>%
+  left_join(dat_FRS %>% select(record_id, cvd_FRS, chd_FRS), 
+            by = c("primary"="record_id"))
+
+
 
 exp3_df = data.frame(exp3) %>%
   filter(!grepl("Repeat", colname)) %>%
@@ -1810,29 +1996,47 @@ exp3_df = data.frame(exp3) %>%
   filter(primary != "Pool") %>%
   pivot_wider(id_cols = c(primary, age, smurfs, cacs, cacs_pct, gensini), 
               names_from = rowname, values_from = value) %>%
-  transform(cacs = as.numeric(cacs), cacs_pct = as.numeric(cacs_pct), gensini = as.numeric(gensini))
+  transform(
+    primary = as.numeric(primary), 
+    cacs = as.numeric(cacs), 
+    cacs_pct = as.numeric(cacs_pct), 
+    gensini = as.numeric(gensini)
+    ) %>%
+  left_join(dat_FRS %>% select(record_id, cvd_FRS, chd_FRS), 
+            by = c("primary"="record_id"))
+
+
 
 exp4_df = data.frame(exp4) %>%
   filter(primary != "Pool") %>%
-  pivot_wider(id_cols = c(primary, colname, age, smurfs, cacs, cacs_pct, gensini), names_from = rowname, values_from = value) %>%
-  transform(cacs = as.numeric(cacs), cacs_pct = as.numeric(cacs_pct), gensini = as.numeric(gensini)) %>%
-  drop_na
+  pivot_wider(id_cols = c(primary, colname, age, smurfs, cacs, cacs_pct, gensini), 
+              names_from = rowname, values_from = value) %>%
+  transform(
+    primary = as.numeric(primary), 
+    cacs = as.numeric(cacs), 
+    cacs_pct = as.numeric(cacs_pct), 
+    gensini = as.numeric(gensini)
+    ) %>%
+  left_join(dat_FRS %>% select(record_id, cvd_FRS, chd_FRS), 
+            by = c("primary"="record_id"))
 
 
-exp1_df
-exp2_df
+
+
+ncol(exp1_df)
+ncol(exp2_df)
 exp3_df
 exp4_df
 
-metab_lipid_prot_cytof_merged_df = inner_join(exp1_df, exp2_df, by=c('primary', 'colname', 'age', 'smurfs', 'cacs', 'cacs_pct', 'gensini')) %>%
-  inner_join(exp3_df, by=c('primary', 'age', 'smurfs', 'cacs', 'cacs_pct', 'gensini')) %>%
-  inner_join(exp4_df, by=c('primary', 'colname', 'age', 'smurfs', 'cacs', 'cacs_pct', 'gensini'))
+metab_lipid_prot_cytof_merged_df = inner_join(exp1_df, exp2_df, by=c('primary', 'colname', 'age', 'smurfs', 'cacs', 'cacs_pct', 'gensini', 'cvd_FRS', 'chd_FRS')) %>%
+  inner_join(exp3_df, by=c('primary', 'age', 'smurfs', 'cacs', 'cacs_pct', 'gensini', 'cvd_FRS', 'chd_FRS')) %>%
+  inner_join(exp4_df, by=c('primary', 'colname', 'age', 'smurfs', 'cacs', 'cacs_pct', 'gensini', 'cvd_FRS', 'chd_FRS'))
 
 
-metab_lipid_prot_merged_df = inner_join(exp1_df, exp2_df, by=c('primary', 'colname', 'age', 'smurfs', 'cacs', 'cacs_pct', 'gensini')) %>%
-  inner_join(exp3_df, by=c('primary', 'age', 'smurfs', 'cacs', 'cacs_pct', 'gensini'))
+metab_lipid_prot_merged_df = inner_join(exp1_df, exp2_df, by=c('primary', 'colname', 'age', 'smurfs', 'cacs', 'cacs_pct', 'gensini', 'cvd_FRS', 'chd_FRS')) %>%
+  inner_join(exp3_df, by=c('primary', 'age', 'smurfs', 'cacs', 'cacs_pct', 'gensini', 'cvd_FRS', 'chd_FRS'))
 
-lipid_prot_merged_df = inner_join(exp2_df, exp3_df, by=c('primary', 'age', 'smurfs', 'cacs', 'cacs_pct', 'gensini'))
+lipid_prot_merged_df = inner_join(exp2_df, exp3_df, by=c('primary', 'age', 'smurfs', 'cacs', 'cacs_pct', 'gensini', 'cvd_FRS', 'chd_FRS'))
 ```
 
 ```{r}
@@ -1843,7 +2047,7 @@ y = metab_lipid_prot_merged_df %>%
     as.matrix()
 
 X = metab_lipid_prot_merged_df %>% 
-    select(-age, -primary, -smurfs, -cacs, -cacs_pct, -gensini, -colname) %>% 
+    select(-age, -primary, -smurfs, -cacs, -cacs_pct, -gensini, -colname, -cvd_FRS, -chd_FRS) %>% 
     as.matrix()
 ```
 
@@ -1897,6 +2101,7 @@ X_test = X[-train,]
 y_test = y[-train,]
 
 pred = predict(elastic_model, X_test)
+boxplot(abs(pred-y_test))
 
 data.frame(
   RMSE = RMSE(pred, y_test),
@@ -1973,7 +2178,13 @@ https://www.ahajournals.org/doi/full/10.1161/CIRCULATIONAHA.120.049057?cookieSet
 age_accl = pred-y_test
 
 graph_df = cbind(metab_lipid_prot_merged_df[-train,],y_test, pred, age_accl) %>%
-  select(primary, age, smurfs, cacs, cacs_pct, gensini, y_test, pred, age_accl)
+  select(primary, age, smurfs, cacs, cacs_pct, gensini, y_test, pred, age_accl, cvd_FRS, chd_FRS) %>%
+  mutate(cacsplus = case_when(
+    cacs_pct > 75 ~ "actionable",
+    cacs > 100 ~ "actionable",
+    TRUE ~ "non-actionable"
+  ))
+  
 
 # Graph of Proteomic, Metabolomic and Lipidomics Age vs Chronological Age
 
@@ -2070,7 +2281,8 @@ graph_df %>%
   theme_bw()
 
 library(plotly)
-in# People who have low CACS score but high SMURFs
+
+# People who have low CACS score but high SMURFs
 graph = graph_df %>%
   mutate(cac_present = case_when(
     cacs_pct>0 ~ "present",
@@ -2090,6 +2302,76 @@ graph = graph_df %>%
 
 ggplotly(graph)
 
+# CACS vs PML age
+graph_df %>%
+  filter(cacsplus == "actionable") %>%
+  filter(is.na(cvd_FRS) == FALSE) %>%
+  ggplot() +
+  aes(x = cvd_FRS, y = cacs_pct) +
+  geom_point() +
+  stat_smooth(method='lm', col='red') +
+  labs(
+    x = "CVD FRS",
+    y = "CACS Percentile (CACS+)",
+  ) +
+  theme_bw()
+
+# Residuals Resilience Score
+cacs_FRS_model = lm(cacs_pct ~ cvd_FRS, graph_df
+                    %>% filter(cacsplus == "actionable")
+                    )
+resilience_residuals = residuals(cacs_FRS_model)
+
+
+# Orthogonal Distance Resilience Score
+
+dist_point_line = function(a, slope, intercept) {
+  x_0 = a[1]
+  y_0 = a[2]
+  d = abs(slope*x_0-y_0+intercept)/sqrt(slope^2+1)
+  # positive resilience score if high risk low cacs
+  if (y_0 <= slope*x_0+intercept) {
+    return(d)
+  } else {
+    return(-d)
+  }
+  
+}
+
+resilience_orthogonals = graph_df %>%
+  select(cvd_FRS, cacs_pct, cacsplus) %>%
+  filter(cacsplus == "actionable") %>%
+  filter(is.na(cvd_FRS) == FALSE) %>%
+  apply(1, function(x) dist_point_line(as.numeric(x[1:2]), 
+        slope = coefficients(cacs_FRS_model)[2], 
+        intercept = coefficients(cacs_FRS_model)[1]))
+
+# Graph Resilience vs Age Acceleration
+graph_df %>%
+  filter(cacsplus == "actionable") %>%
+  filter(is.na(cvd_FRS) == FALSE) %>%
+  mutate(resilience_orthogonals = resilience_orthogonals) %>%
+  ggplot() +
+  aes(x = age_accl, y = resilience_orthogonals) +
+  geom_point() +
+  stat_smooth(method='lm', col='red') +
+  labs(
+    x = "Age Acceleration",
+    y = "Resiliency Score",
+  ) +
+  theme_bw()
+
+# FRS against Age (Sense Check)
+
+graph_df %>%
+  ggplot() +
+  aes(x = age, y =  cvd_FRS) +
+  geom_point() +
+  labs(
+    x = "Age",
+    y = "FRS"
+  ) +
+  theme_bw()
 ```
 
 
