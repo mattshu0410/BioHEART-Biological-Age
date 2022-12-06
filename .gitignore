@@ -39,3 +39,6 @@ vignettes/*.pdf
 BioCT-DL_20220209.xlsx
 MultiAssayExperiment_20220816.RData
 MultiAssayExperiment_PLM_20210519_ageCorrected.RData
+
+# Excel
+*.xlsx
