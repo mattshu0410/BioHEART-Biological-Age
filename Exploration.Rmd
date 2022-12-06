@@ -27,7 +27,7 @@ library(keras)         # for fitting DNNs
 library(tfruns)        # for additional grid search & model training functions
 
 library(boot)
-
+library(CVrisk)
 ```
 
 # Biological Age
@@ -50,7 +50,11 @@ metadata(bioheart_mae)$variable_definition
 colData(bioheart_mae)
 
 # FRS
-dat_FRS
+dat_FRS %>%
+  filter(ethcat == 5) %>%
+  select(age) %>%
+  pull() %>%
+  hist()
 ```
 
 ```{r}
@@ -105,15 +109,20 @@ bootstrap_metric = function(X, y, model, n) {
     bs_X = X[indices,]
     bs_y = y[indices]
     pred = predict(model, bs_X)
+    
     metric = rbind(metric, 
                    cbind(RMSE = RMSE(pred, bs_y), 
                          R2 = R2(pred, bs_y), 
                          MAE = MAE(pred, bs_y)))
+    
   }
+  
   pred = predict(model, X)
   a = metric
+  print(a)
+  print(c(LB = mean(a$R2)-1.96*sd(a$R2), UB = mean(a$R2)+1.96*sd(a$R2)))
   df = cbind(
-        rbind(RMSE = RMSE(pred, y), Rsquare = R2(pred, y), MAE = MAE(pred, y)),
+        rbind(RMSE = RMSE(pred, y), R2 = R2(pred, y), MAE = MAE(pred, y)),
         rbind(
           c(LB = mean(a$RMSE)-1.96*sd(a$RMSE), UB = mean(a$RMSE)+1.96*sd(a$RMSE)),
           c(LB = mean(a$R2)-1.96*sd(a$R2), UB = mean(a$R2)+1.96*sd(a$R2)),
@@ -277,6 +286,10 @@ control = trainControl(method = "repeatedcv",
                        search = "random",
                        verboseIter = TRUE)
 
+X_train = X[train,]
+y_train = y[train,]
+X_test = X[-train,]
+y_test = y[-train,]
 
 # Training Elastic Net Regression model
 elastic_model = caret::train(age ~ .,
@@ -284,7 +297,12 @@ elastic_model = caret::train(age ~ .,
             method = "glmnet",
             tuneLength = 25,
             trControl = control)
-coef(elastic_model$finalModel, elastic_model$bestTune$lambda)
+
+data.frame(as.matrix(coef(elastic_model$finalModel, elastic_model$bestTune$lambda))) %>%
+  filter(s1 != 0)
+
+
+
 elastic_model
 ```
 
@@ -353,16 +371,15 @@ metrics = bootstrap_metric(data.frame(axes), y_test, PCA_model, 200)
 paste(as.character(metrics[2,1])," (",as.character(metrics[2,2]),"-",as.character(metrics[2,3]), ")", sep="")
 paste(as.character(metrics[3,1])," (",as.character(metrics[3,2]),"-",as.character(metrics[3,3]), ")", sep="")
 ```
+
 ### Using Random Forest
 
 Random forests (RF) is a popular tree-based ensemble machine learning tool that is highly data adaptive, applies to "large p, small n" problems, and is able to account for correlation as well as interactions among features.
 
-
 <https://www.sciencedirect.com/science/article/pii/S0888754312000626>
 
 ```{r}
-ntree = 3
-mtry = sqrt(ncol(X))
+ntree = 500
 
 # Model Building : Random Forest
 control = trainControl(method = "repeatedcv",
@@ -418,6 +435,95 @@ data.frame(
   RMSE = RMSE(pred, y_test),
   Rsquare = R2(pred, y_test)
 )
+
+```
+
+### Autoencoder
+
+```{r}
+library(h2o)
+h2o.init()
+
+```
+
+```{r}
+
+
+features = as.h2o(X_train)
+
+# Training Autoencoder on Features
+
+ae1 = h2o.deeplearning(
+  x = seq_along(features),
+  training_frame = features,
+  autoencoder = TRUE,
+  hidden = c(500,275,500),
+  activation = "Tanh"
+)
+
+# Pulling Deep Features
+ae1_codings = h2o.deepfeatures(ae1, features, layer = 2)
+X_codings = as.data.frame(ae1_codings)
+
+# Regression on Deep Features
+slm = lm(y_train ~ ., cbind(y_train, X_codings))
+summary(slm)
+
+# Model Predict
+test_features = as.h2o(X_test)
+test_features = h2o.na_omit(test_features)
+test_codings = h2o.deepfeatures(ae1, test_features, layer = 2)
+test_codings_df = as.data.frame(test_codings)
+pred = predict(slm, test_codings_df)
+boxplot(abs(pred-y_test))
+
+
+metrics = bootstrap_metric(test_codings_df, y_test, slm, 200)
+paste(as.character(metrics[2,1])," (",as.character(metrics[2,2]),"-",as.character(metrics[2,3]), ")", sep="")
+paste(as.character(metrics[3,1])," (",as.character(metrics[3,2]),"-",as.character(metrics[3,3]), ")", sep="")
+
+
+
+```
+
+My attempt at trying to see if there is a 2D projection of the deep features that shows any pattern.
+
+```{r}
+
+ae2 = h2o.deeplearning(
+  x = seq_along(features),
+  training_frame = features,
+  autoencoder = TRUE,
+  hidden = 2,
+  activation = "Tanh"
+)
+
+ae2_codings = h2o.deepfeatures(ae2, features, layer = 1)
+
+
+
+cbind(
+  df[train,],
+  as.data.frame(ae2_codings)
+  ) %>%
+  ggplot() +
+  aes(x = `DF.L1.C1`, y = `DF.L1.C2`, color = cacs_pct) +
+  geom_point()
+
+```
+
+### Support Vector Regression
+
+```{r}
+library(e1071)
+library(kernlab)
+
+model = caret::train(
+  y_train ~ .,
+  data = cbind(y_train, X_train),
+  method = 'svmRadial'
+)
+model
 
 ```
 
@@ -593,7 +699,9 @@ elastic_model = caret::train(age ~ .,
                              tuneLength = 25,
                              trControl = control)
 
-coef(elastic_model$finalModel, elastic_model$bestTune$lambda)
+data.frame(as.matrix(coef(elastic_model$finalModel, elastic_model$bestTune$lambda))) %>%
+  filter(s1 != 0)
+
 elastic_model
 
 # Testing on Data Left-Out
@@ -678,7 +786,6 @@ RMSE = 11.29 R\^2 = 0.22
 
 ```{r}
 ntree = 500
-mtry = sqrt(ncol(X))
 
 # Model Building : Random Forest
 control = trainControl(method = "repeatedcv",
@@ -703,10 +810,9 @@ y_test = y[-train,]
 
 pred = predict(rf_model, X_test)
 
-data.frame(
-  RMSE = RMSE(pred, y_test),
-  Rsquare = R2(pred, y_test)
-)
+metrics = bootstrap_metric(X_test, y_test, rf_model, 200)
+paste(as.character(metrics[2,1])," (",as.character(metrics[2,2]),"-",as.character(metrics[2,3]), ")", sep="")
+paste(as.character(metrics[3,1])," (",as.character(metrics[3,2]),"-",as.character(metrics[3,3]), ")", sep="")
 
 ```
 
@@ -869,30 +975,10 @@ pred = predict(model, X_test)
 
 boxplot(abs(pred-y_test))
 
-data.frame(
-  RMSE = RMSE(pred, y_test),
-  Rsquare = R2(pred, y_test)
-)
-```
+metrics = bootstrap_metric(X_test, y_test,model, 200)
+paste(as.character(metrics[2,1])," (",as.character(metrics[2,2]),"-",as.character(metrics[2,3]), ")", sep="")
+paste(as.character(metrics[3,1])," (",as.character(metrics[3,2]),"-",as.character(metrics[3,3]), ")", sep="")
 
-Autoencoder
-
-```{r}
-
-library(h2o)
-features = as.h2o(X_train) %>% h2o.na_omit()
-
-ae1 = h2o.deeplearning(
-  x = seq_along(features),
-  training_frame = features,
-  autoencoder = TRUE,
-  hidden = 2,
-  activation = 'Tanh',
-  sparse = TRUE
-)
-
-ae1_codings = h2o.deepfeatures(ae1, features, layer = 1)
-ae1_codings
 ```
 
 ```{r}
@@ -931,6 +1017,48 @@ data.frame(
   RMSE = RMSE(pred, y_test),
   Rsquare = R2(pred, y_test)
 )
+
+```
+
+### Autoencoder
+```{r}
+library(h2o)
+h2o.init()
+
+features = as.h2o(X_train)
+# Strange bug where special characters cause extra row created
+features = h2o.na_omit(features)
+
+# Training Autoencoder on Features
+
+ae1 = h2o.deeplearning(
+  x = seq_along(features),
+  training_frame = features,
+  autoencoder = TRUE,
+  hidden = 45,
+  activation = "Tanh"
+)
+
+# Pulling Deep Features
+ae1_codings = h2o.deepfeatures(ae1, features, layer = 1)
+X_codings = as.data.frame(ae1_codings)
+
+# Regression on Deep Features
+slm = lm(y_train ~ ., cbind(y_train, X_codings))
+summary(slm)
+
+# Model Predict
+test_features = as.h2o(X_test)
+test_features = h2o.na_omit(test_features)
+test_codings = h2o.deepfeatures(ae1, test_features, layer = 1)
+test_codings_df = as.data.frame(test_codings)
+pred = predict(slm, test_codings_df)
+boxplot(abs(pred-y_test))
+
+
+metrics = bootstrap_metric(test_codings_df, y_test, slm, 200)
+paste(as.character(metrics[2,1])," (",as.character(metrics[2,2]),"-",as.character(metrics[2,3]), ")", sep="")
+paste(as.character(metrics[3,1])," (",as.character(metrics[3,2]),"-",as.character(metrics[3,3]), ")", sep="")
 
 ```
 
@@ -1076,7 +1204,14 @@ bioheart_mae[['Lipidomics_species']]
 
 ### Elastic Regression Approach
 
+43 variables from 48 totals
+429 variables from 832 species
+
 ```{r}
+# Parallel Computing
+library(doParallel)
+cl = makePSOCKcluster(5)
+registerDoParallel(cl)
 
 # X and Y datasets
 y = df %>% 
@@ -1091,7 +1226,7 @@ X = df %>%
 
 # Train Test Split
 
-p = 0.7 
+p = 0.7
 train = sample(1:nrow(X), nrow(X)*p)
 
 X_train = X[train,]
@@ -1117,8 +1252,9 @@ elastic_model = caret::train(age ~ .,
 
 # Number of Coefficients
 coef_matrix = coef(elastic_model$finalModel, elastic_model$bestTune$lambda)
-coef_matrix
-length(as.numeric(coef_matrix)[as.numeric(coef_matrix) != 0])
+
+data.frame(as.matrix(coef(elastic_model$finalModel, elastic_model$bestTune$lambda))) %>%
+  filter(s1 != 0)
 
 # Testing on Data Left-Out
 elastic_model$bestTune
@@ -1129,12 +1265,13 @@ pred = predict(elastic_model, X_test)
 
 boxplot(abs(pred-y_test))
 
-data.frame(
-  RMSE = RMSE(pred, y_test),
-  Rsquare = R2(pred, y_test),
-  MAE = MAE(pred, y_test)
-)
 
+metrics = bootstrap_metric(X_test, y_test,elastic_model, 200)
+paste(as.character(metrics[2,1])," (",as.character(metrics[2,2]),"-",as.character(metrics[2,3]), ")", sep="")
+paste(as.character(metrics[3,1])," (",as.character(metrics[3,2]),"-",as.character(metrics[3,3]), ")", sep="")
+
+## When you are done:
+stopCluster(cl)
 
 ```
 
@@ -1172,7 +1309,7 @@ legend("topleft", legend=c("Cut-off @ PC5", "90% Explained Variance"),
 axes = predict(pca, X[train,])
 pca_dat = cbind(X[train,], axes, age = y[train,])
 
-PCA_model = lm(age ~ PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + PC11 + PC12 + PC13 + PC14 + PC15 + PC16 + PC17 + PC18 + PC19 + PC20, data.frame(pca_dat))
+PCA_model = lm(age ~ PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8, data.frame(pca_dat))
 summary(PCA_model)
 
 
@@ -1184,10 +1321,11 @@ axes = predict(pca, X_test)
 pred = predict(PCA_model, data.frame(axes))
 
 
-data.frame(
-  RMSE = RMSE(pred, y_test),
-  Rsquare = R2(pred, y_test)
-)
+
+metrics = bootstrap_metric(data.frame(axes), y_test,PCA_model, 200)
+paste(as.character(metrics[2,1])," (",as.character(metrics[2,2]),"-",as.character(metrics[2,3]), ")", sep="")
+paste(as.character(metrics[3,1])," (",as.character(metrics[3,2]),"-",as.character(metrics[3,3]), ")", sep="")
+
 ```
 
 -   KDM - uses chronological age, BM are a function of BA and CA.
@@ -1210,8 +1348,7 @@ RMSE = 11.96586 R\^2 = 0.1051555
 <https://www.sciencedirect.com/science/article/pii/S0888754312000626>
 
 ```{r}
-ntree = 3
-mtry = sqrt(ncol(X))
+ntree = 500
 
 # Model Building : Random Forest
 control = trainControl(method = "repeatedcv",
@@ -1220,7 +1357,7 @@ control = trainControl(method = "repeatedcv",
                        search = "random",
                        verbose = TRUE)
 
-rf_model =  train(age ~ .,
+rf_model =  caret::train(age ~ .,
                   data = cbind(X[train,], "age" = y[train,]),
                   method = 'rf',
                   tuneLength  = 15, 
@@ -1236,10 +1373,9 @@ y_test = y[-train,]
 
 pred = predict(rf_model, X_test)
 
-data.frame(
-  RMSE = RMSE(pred, y_test),
-  Rsquare = R2(pred, y_test)
-)
+metrics = bootstrap_metric(X_test, y_test, rf_model, 200)
+paste(as.character(metrics[2,1])," (",as.character(metrics[2,2]),"-",as.character(metrics[2,3]), ")", sep="")
+paste(as.character(metrics[3,1])," (",as.character(metrics[3,2]),"-",as.character(metrics[3,3]), ")", sep="")
 
 ```
 
@@ -1413,16 +1549,51 @@ pred = predict(model, X_test)
 
 boxplot(abs(pred-y_test))
 
-data.frame(
-  RMSE = RMSE(pred, y_test),
-  Rsquare = R2(pred, y_test)
-)
+
+metrics = bootstrap_metric(X_test, y_test,model, 200)
+paste(as.character(metrics[2,1])," (",as.character(metrics[2,2]),"-",as.character(metrics[2,3]), ")", sep="")
+paste(as.character(metrics[3,1])," (",as.character(metrics[3,2]),"-",as.character(metrics[3,3]), ")", sep="")
+
 ```
 
-Autoencoder
+### Autoencoder
 
 ```{r}
+library(h2o)
+h2o.init()
 
+features = as.h2o(X_train)
+
+# Training Autoencoder on Features
+
+ae1 = h2o.deeplearning(
+  x = seq_along(features),
+  training_frame = features,
+  autoencoder = TRUE,
+  hidden = 290,
+  activation = "Tanh"
+)
+
+# Pulling Deep Features
+ae1_codings = h2o.deepfeatures(ae1, features, layer = 1)
+X_codings = as.data.frame(ae1_codings)
+
+# Regression on Deep Features
+slm = lm(y_train ~ ., cbind(y_train, X_codings))
+summary(slm)
+
+# Model Predict
+test_features = as.h2o(X_test)
+test_features = h2o.na_omit(test_features)
+test_codings = h2o.deepfeatures(ae1, test_features, layer = 1)
+test_codings_df = as.data.frame(test_codings)
+pred = predict(slm, test_codings_df)
+boxplot(abs(pred-y_test))
+
+
+metrics = bootstrap_metric(test_codings_df, y_test, slm, 200)
+paste(as.character(metrics[2,1])," (",as.character(metrics[2,2]),"-",as.character(metrics[2,3]), ")", sep="")
+paste(as.character(metrics[3,1])," (",as.character(metrics[3,2]),"-",as.character(metrics[3,3]), ")", sep="")
 
 ```
 
@@ -1433,11 +1604,20 @@ Autoencoder
 
 
 # Calculating Age Acceleration
+# negative age_accl means younger than chronological
+# positive age_accl means older than chronological
 
 age_accl = pred-y_test
+age_accl_adj = residuals(lm(age_accl ~ y_test))
 
-graph_df = cbind(df[-train,],y_test, pred, age_accl) %>%
-  select(primary, age, smurfs, cacs, cacs_pct, gensini, y_test, pred, age_accl)
+graph_df = cbind(df[-train,],y_test, pred, age_accl, age_accl_adj) %>%
+select(primary, age, smurfs, cacs, cacs_pct, gensini, y_test, pred, age_accl, age_accl_adj) %>%
+mutate(cacsplus = case_when(
+  cacs_pct > 75 ~ "actionable",
+  cacs > 100 ~ "actionable",
+  TRUE ~ "non-actionable"
+))
+
 
 # Graph of Lipidomic Age vs Chronological Age
 
@@ -1552,6 +1732,20 @@ graph_df %>%
                      high="red" ) +
   theme_bw()
 
+# Graph CACS vs Age Acceleration (Adjusted)
+graph_df %>%
+  #filter(cacsplus == "actionable") %>%
+  #filter(is.na(cvd_FRS) == FALSE) %>%
+  ggplot() +
+  aes(x = age_accl_adj, y = cacs_pct, color=age) +
+  geom_point() +
+  stat_smooth(method='lm', col='red') +
+  labs(
+    x = "Age Acceleration (Adjusted)",
+    y = "CACS Percentile",
+  ) +
+  scale_color_gradient(low="green", high="red" ) +
+  theme_bw()
 
 ```
 
@@ -1583,6 +1777,8 @@ bioheart_mae[['CyTOF']]
 ### Elastic Regression Approach
 
 R\^2 = 0.2656321 RMSE = 9.563379
+
+22 variables from 77 variables
 
 ```{r}
 
@@ -1639,11 +1835,11 @@ y_test = y[-train,]
 
 pred = predict(elastic_model, X_test)
 
-data.frame(
-  RMSE = RMSE(pred, y_test),
-  Rsquare = R2(pred, y_test),
-  MAE = MAE(pred, y_test)
-)
+
+metrics = bootstrap_metric(X_test, y_test,elastic_model, 200)
+paste(as.character(metrics[2,1])," (",as.character(metrics[2,2]),"-",as.character(metrics[2,3]), ")", sep="")
+paste(as.character(metrics[3,1])," (",as.character(metrics[3,2]),"-",as.character(metrics[3,3]), ")", sep="")
+
 
 
 ```
@@ -1686,7 +1882,7 @@ legend("topleft", legend=c("Cut-off @ PC5", "90% Explained Variance"),
 axes = predict(pca, X[train,])
 pca_dat = cbind(X[train,], axes, age = y[train,])
 
-PCA_model = lm(age ~ PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + PC11 + PC12 + PC13 + PC14, data.frame(pca_dat))
+PCA_model = lm(age ~ PC1 + PC2 + PC3 + PC4, data.frame(pca_dat))
 summary(PCA_model)
 
 
@@ -1698,10 +1894,12 @@ axes = predict(pca, X_test)
 pred = predict(PCA_model, data.frame(axes))
 
 
-data.frame(
-  RMSE = RMSE(pred, y_test),
-  Rsquare = R2(pred, y_test)
-)
+
+metrics = bootstrap_metric(data.frame(axes), y_test,PCA_model, 200)
+paste(as.character(metrics[2,1])," (",as.character(metrics[2,2]),"-",as.character(metrics[2,3]), ")", sep="")
+paste(as.character(metrics[3,1])," (",as.character(metrics[3,2]),"-",as.character(metrics[3,3]), ")", sep="")
+
+
 ```
 
 ```{r}
@@ -1720,8 +1918,7 @@ RMSE = 10.76234 R\^2 = 0.1105379
 <https://www.sciencedirect.com/science/article/pii/S0888754312000626>
 
 ```{r}
-ntree = 3
-mtry = sqrt(ncol(X))
+ntree = 500
 
 # Model Building : Random Forest
 control = trainControl(method = "repeatedcv",
@@ -1730,7 +1927,7 @@ control = trainControl(method = "repeatedcv",
                        search = "random",
                        verbose = TRUE)
 
-rf_model =  train(age ~ .,
+rf_model =  caret::train(age ~ .,
                   data = cbind(X[train,], "age" = y[train,]),
                   method = 'rf',
                   tuneLength  = 15, 
@@ -1746,10 +1943,10 @@ y_test = y[-train,]
 
 pred = predict(rf_model, X_test)
 
-data.frame(
-  RMSE = RMSE(pred, y_test),
-  Rsquare = R2(pred, y_test)
-)
+metrics = bootstrap_metric(X_test, y_test, rf_model, 200)
+paste(as.character(metrics[2,1])," (",as.character(metrics[2,2]),"-",as.character(metrics[2,3]), ")", sep="")
+paste(as.character(metrics[3,1])," (",as.character(metrics[3,2]),"-",as.character(metrics[3,3]), ")", sep="")
+
 
 ```
 
@@ -1893,10 +2090,10 @@ pred = predict(model, X_test)
 
 boxplot(abs(pred-y_test))
 
-data.frame(
-  RMSE = RMSE(pred, y_test),
-  Rsquare = R2(pred, y_test)
-)
+metrics = bootstrap_metric(X_test, y_test,model, 200)
+paste(as.character(metrics[2,1])," (",as.character(metrics[2,2]),"-",as.character(metrics[2,3]), ")", sep="")
+paste(as.character(metrics[3,1])," (",as.character(metrics[3,2]),"-",as.character(metrics[3,3]), ")", sep="")
+
 ```
 
 Autoencoder
@@ -1935,11 +2132,50 @@ data.frame(
 
 ```
 
+### Autoencoder
+
+```{r}
+library(h2o)
+h2o.init()
+
+features = as.h2o(X_train)
+
+# Training Autoencoder on Features
+
+ae1 = h2o.deeplearning(
+  x = seq_along(features),
+  training_frame = features,
+  autoencoder = TRUE,
+  hidden = 35,
+  activation = "Tanh"
+)
+
+# Pulling Deep Features
+ae1_codings = h2o.deepfeatures(ae1, features, layer = 1)
+X_codings = as.data.frame(ae1_codings)
+
+# Regression on Deep Features
+slm = lm(y_train ~ ., cbind(y_train, X_codings))
+summary(slm)
+
+# Model Predict
+test_features = as.h2o(X_test)
+test_features = h2o.na_omit(test_features)
+test_codings = h2o.deepfeatures(ae1, test_features, layer = 1)
+test_codings_df = as.data.frame(test_codings)
+pred = predict(slm, test_codings_df)
+boxplot(abs(pred-y_test))
+
+
+metrics = bootstrap_metric(test_codings_df, y_test, slm, 200)
+paste(as.character(metrics[2,1])," (",as.character(metrics[2,2]),"-",as.character(metrics[2,3]), ")", sep="")
+paste(as.character(metrics[3,1])," (",as.character(metrics[3,2]),"-",as.character(metrics[3,3]), ")", sep="")
+
+```
+
 ## Combined
 
 I want to see how the prediction improves if I use a BlockForest on Proteomic, Metabolomic and Lipidomics. In theory it should capture the interaction effects between different omics data.
-
-
 
 ```{r}
 exp1 = longFormat(bioheart_mae[,,'Metabolomics'], # Does not do well
@@ -2051,10 +2287,10 @@ X = metab_lipid_prot_merged_df %>%
     as.matrix()
 ```
 
-
 ```{r}
 # Train Test Split
-p = 0.7 
+
+p = 0.7
 train = sample(1:nrow(X), nrow(X)*p)
 
 X_train =  X[train,]
@@ -2066,10 +2302,15 @@ y_test = y[-train,]
 
 ### Elastic Regression
 
-With 251 final variables
-R2: 8.332503	RMSE: 0.5935032	MAE: 6.395322	
+With 251 final variables R2: 8.332503 RMSE: 0.5935032 MAE: 6.395322
 
 ```{r}
+
+# Parallel Computing
+library(doParallel)
+cl = makePSOCKcluster(5)
+registerDoParallel(cl)
+
 
 
 # Model Building : Elastic Net Regression
@@ -2094,6 +2335,8 @@ elastic_model
 coef_matrix = coef(elastic_model$finalModel, elastic_model$bestTune$lambda)
 coef_matrix
 length(as.numeric(coef_matrix)[as.numeric(coef_matrix) != 0])
+rownames(coef(elastic_model$finalModel, elastic_model$bestTune$lambda))[as.numeric(coef_matrix) != 0]
+
 
 # Testing on Data Left-Out
 elastic_model$bestTune
@@ -2103,17 +2346,102 @@ y_test = y[-train,]
 pred = predict(elastic_model, X_test)
 boxplot(abs(pred-y_test))
 
-data.frame(
-  RMSE = RMSE(pred, y_test),
-  Rsquare = R2(pred, y_test),
-  MAE = MAE(pred, y_test)
-)
+metrics = bootstrap_metric(X_test, y_test,elastic_model, 200)
+paste(as.character(metrics[2,1])," (",as.character(metrics[2,2]),"-",as.character(metrics[2,3]), ")", sep="")
+paste(as.character(metrics[3,1])," (",as.character(metrics[3,2]),"-",as.character(metrics[3,3]), ")", sep="")
+
+## When you are done:
+stopCluster(cl)
+
+```
+
+### Using PCA
+
+```{r}
+pca_df = X[train,]
+pca = prcomp(pca_df)
+summary(pca)
+
+screeplot(pca, type = "l", npcs = 30, main = "Screeplot of the first 30 PCs")
+abline(h = 1, col="red", lty=5)
+legend("topright", legend=c("Eigenvalue = 1"),
+       col=c("red"), lty=5, cex=0.6)
+
+cumpro = cumsum(pca$sdev^2 / sum(pca$sdev^2))
+plot(cumpro[0:50], xlab = "PC #", ylab = "Amount of explained variance", main = "Cumulative variance plot")
+abline(v = 5, col="blue", lty=5)
+# abline(h = 0.63305, col="blue", lty=5)
+abline(h = 0.9, col="red", lty=5)
+legend("topleft", legend=c("Cut-off @ PC5", "90% Explained Variance"),
+       col=c("blue", "red"), lty=5, cex=0.6)
 
 
 ```
 
+```{r}
+# PCA Axes for Subjects
+axes = predict(pca, X[train,])
+pca_dat = cbind(X[train,], axes, age = y[train,])
+
+PCA_model = lm(age ~ PC1 + PC2 + PC3 + PC4, data.frame(pca_dat))
+summary(PCA_model)
 
 
+# Test on Test Data
+X_test = X[-train,]
+y_test = y[-train,]
+axes = predict(pca, X_test)
+
+pred = predict(PCA_model, data.frame(axes))
+
+
+data.frame(
+  RMSE = RMSE(pred, y_test),
+  Rsquare = R2(pred, y_test)
+)
+
+metrics = bootstrap_metric(data.frame(axes), y_test, PCA_model, 200)
+paste(as.character(metrics[2,1])," (",as.character(metrics[2,2]),"-",as.character(metrics[2,3]), ")", sep="")
+paste(as.character(metrics[3,1])," (",as.character(metrics[3,2]),"-",as.character(metrics[3,3]), ")", sep="")
+```
+
+### Using Random Forest
+
+Random forests (RF) is a popular tree-based ensemble machine learning tool that is highly data adaptive, applies to "large p, small n" problems, and is able to account for correlation as well as interactions among features.
+
+<https://www.sciencedirect.com/science/article/pii/S0888754312000626>
+
+```{r}
+ntree = 500
+
+# Model Building : Random Forest
+control = trainControl(method = "repeatedcv",
+                       number = 5,
+                       repeats = 5,
+                       search = "random",
+                       verbose = TRUE)
+
+rf_model =  caret::train(age ~ .,
+                         data = cbind(X[train,], "age" = y[train,]),
+                         method = 'rf',
+                         tuneLength  = 15, 
+                         trControl = control)
+
+```
+
+```{r}
+
+# Test on Test Data
+X_test = X[-train,]
+y_test = y[-train,]
+
+pred = predict(rf_model, X_test)
+
+metrics = bootstrap_metric(X_test, y_test, rf_model, 200)
+paste(as.character(metrics[2,1])," (",as.character(metrics[2,2]),"-",as.character(metrics[2,3]), ")", sep="")
+paste(as.character(metrics[3,1])," (",as.character(metrics[3,2]),"-",as.character(metrics[3,3]), ")", sep="")
+
+```
 
 ### Using Random BlockForest
 
@@ -2152,39 +2480,284 @@ blockforobj$forest
 pred = predict(blockforobj$forest, X_test)
 
 
-data.frame(
-  RMSE = RMSE(pred$predictions, y_test),
-  Rsquare = R2(pred$predictions, y_test),
-  MAE = MAE(pred$predictions, y_test)
+metrics = bootstrap_metric(X_test, y_test,blockforobj$forest, 200)
+paste(as.character(metrics[2,1])," (",as.character(metrics[2,2]),"-",as.character(metrics[2,3]), ")", sep="")
+paste(as.character(metrics[3,1])," (",as.character(metrics[3,2]),"-",as.character(metrics[3,3]), ")", sep="")
+
+```
+
+### Using Neural Network
+
+iAge
+
+2 fully connected layers with 5 nodes in each layer and tanh activation
+
+```{r}
+
+
+# Creating Model
+model = keras_model_sequential() %>%
+  layer_dense(256, activation = 'relu') %>%
+  layer_dense(64, activation = 'relu') %>%
+  layer_dense(1)
+
+
+
+model %>% compile(
+  loss = 'mean_absolute_error',
+  optimizer = optimizer_adam(0.001)
 )
+
+```
+
+<https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4931851/>
+
+I copied an architecture to see if it did better. Pretty BAD.
+
+```{r}
+
+
+# Creating Model
+model = keras_model_sequential() %>%
+  layer_dense(500, activation = 'PReLU',
+              kernel_regularizer = regularizer_l2(0.001)) %>%
+  layer_dropout(rate = 0.2) %>%
+  layer_dense(250, activation = 'PReLU',
+              kernel_regularizer = regularizer_l2(0.001)) %>%
+  layer_dropout(rate = 0.2) %>%
+  layer_dense(100, activation = 'PReLU',
+              kernel_regularizer = regularizer_l2(0.001)) %>%
+  layer_dropout(rate = 0.2) %>%
+  layer_dense(50, activation = 'PReLU',kernel_regularizer = regularizer_l2(0.001)) %>%
+  layer_dropout(rate = 0.2) %>%
+  layer_dense(1)
+
+
+
+model %>% compile(
+  loss = 'mean_absolute_error',
+  optimizer = optimizer_adagrad(0.001)
+)
+
+```
+
+L1 Regularisation + Batch Norm
+
+```{r}
+model = keras_model_sequential() %>%
+  
+  # Network architecture with L1 regularization and batch normalization
+  layer_dense(units = 256, activation = "relu",
+              kernel_regularizer = regularizer_l2(0.001)) %>%
+  #layer_batch_normalization() %>%
+  layer_dense(units = 128, activation = "relu", 
+              kernel_regularizer = regularizer_l2(0.001)) %>%
+  #layer_batch_normalization() %>%
+  layer_dense(units = 64, activation = "relu", 
+              kernel_regularizer = regularizer_l2(0.001)) %>%
+  #layer_batch_normalization() %>%
+  layer_dense(units = 1) %>%
+
+  # Backpropagation
+  compile(
+    loss = 'mean_absolute_error',
+    optimizer = optimizer_adam(0.001)
+  )
+```
+
+Model with Dropout
+
+Model with Dropout
+
+```{r}
+
+model = keras_model_sequential() %>%
+  
+  # Network architecture with 20% dropout
+  layer_dense(units = 256, activation = "relu") %>%
+  layer_dropout(rate = 0.2) %>%
+  layer_dense(units = 128, activation = "relu") %>%
+  layer_dropout(rate = 0.2) %>%
+  layer_dense(units = 64, activation = "relu") %>%
+  layer_dropout(rate = 0.2) %>%
+  layer_dense(units = 1) %>%
+  
+  # Backpropagation
+  compile(
+    loss = 'mean_absolute_error',
+    optimizer = optimizer_adam(0.001)
+  )
+```
+
+```{r}
+
+# Train Model
+fit1 = model %>%
+  fit(
+    x = X_train,
+    y = y_train,
+    epochs = 100,
+    batch_size = 128,
+    validation_split = 0.2,
+    verbose = TRUE
+  )
+
+# Model Predict
+pred = predict(model, X_test)
+
+boxplot(abs(pred-y_test))
+
+
+metrics = bootstrap_metric(X_test, y_test,model, 200)
+paste(as.character(metrics[2,1])," (",as.character(metrics[2,2]),"-",as.character(metrics[2,3]), ")", sep="")
+paste(as.character(metrics[3,1])," (",as.character(metrics[3,2]),"-",as.character(metrics[3,3]), ")", sep="")
+
+```
+
+### Autoencoder
+
+```{r}
+library(h2o)
+h2o.init()
+
+```
+```{r}
+
+features = as.h2o(X_train)
+# Strange bug where special characters cause extra row created
+features = h2o.na_omit(features)
+
+```
+
+```{r}
+
+
+# Training Autoencoder on Features
+
+ae1 = h2o.deeplearning(
+  x = seq_along(features),
+  training_frame = features,
+  autoencoder = TRUE,
+  hidden = 290,
+  activation = "Tanh"
+)
+
+# Pulling Deep Features
+ae1_codings = h2o.deepfeatures(ae1, features, layer = 1)
+X_codings = as.data.frame(ae1_codings)
+
+# Regression on Deep Features
+slm = lm(y_train ~ ., cbind(y_train, X_codings))
+summary(slm)
+
+# Model Predict
+test_features = as.h2o(X_test)
+test_features = h2o.na_omit(test_features)
+test_codings = h2o.deepfeatures(ae1, test_features, layer = 1)
+test_codings_df = as.data.frame(test_codings)
+pred = predict(slm, test_codings_df)
+boxplot(abs(pred-y_test))
+
+
+metrics = bootstrap_metric(test_codings_df, y_test, slm, 200)
+paste(as.character(metrics[2,1])," (",as.character(metrics[2,2]),"-",as.character(metrics[2,3]), ")", sep="")
+paste(as.character(metrics[3,1])," (",as.character(metrics[3,2]),"-",as.character(metrics[3,3]), ")", sep="")
+
+
+```
+### Grid Search Autoencoder
+
+
+```{r}
+hyper_grid = list(hidden = list(
+  c(50),
+  c(100), 
+  c(300, 100, 300),
+  c(100, 50, 100),
+  c(450, 300, 250, 300, 450),
+  c(250)
+))
+
+
+# Execute grid search
+ae_grid = h2o.grid(
+  algorithm = 'deeplearning',
+  x = seq_along(features),
+  training_frame = features,
+  grid_id = 'autoencoder_grid',
+  autoencoder = TRUE,
+  activation = 'Tanh',
+  hyper_params = hyper_grid,
+  ignore_const_cols = FALSE,
+  seed = 123
+)
+
+h2o.getGrid('autoencoder_grid', sort_by = 'mse', decreasing = FALSE)
+
 ```
 
 
 ### Graphs
 
+```{r}
+cbind(metab_lipid_prot_merged_df,y, pred, age_accl, age_accl_adj)
+
+```
+
+
 This paper here indicates what is resiliency and absence of CAC.
 
-https://www.ahajournals.org/doi/full/10.1161/CIRCULATIONAHA.120.049057?cookieSet=1
+<https://www.ahajournals.org/doi/full/10.1161/CIRCULATIONAHA.120.049057?cookieSet=1>
 
+```{R}
+graph_df 
+dat_FRS %>%
+  mutate(cacs = as.double(cacs))
+```
 
 ```{r}
 
-
+dat_FRS = dat_FRS %>%
+  mutate(cacs = as.double(cacs),
+         cacs_pct = as.double(cacs_pct))
 
 # Calculating Age Acceleration
 # negative age_accl means younger than chronological
 # positive age_accl means older than chronological
-
+pred = predict(elastic_model, X_test)
 age_accl = pred-y_test
+age_accl_adj = residuals(lm(age_accl ~ y_test))
 
-graph_df = cbind(metab_lipid_prot_merged_df[-train,],y_test, pred, age_accl) %>%
-  select(primary, age, smurfs, cacs, cacs_pct, gensini, y_test, pred, age_accl, cvd_FRS, chd_FRS) %>%
+graph_df = cbind(metab_lipid_prot_merged_df[-train,],y_test, pred, age_accl, age_accl_adj) %>%
+  select(primary, age, smurfs, cacs, cacs_pct, gensini, y_test, pred, age_accl, age_accl_adj, cvd_FRS, chd_FRS) %>%
   mutate(cacsplus = case_when(
     cacs_pct > 75 ~ "actionable",
     cacs > 100 ~ "actionable",
     TRUE ~ "non-actionable"
-  ))
-  
+  )) %>%
+  # Add Phenotype Data
+  left_join(dat_FRS, by=c("primary"="ID", "cacs"="cacs", "cacs_pct" = "cacs_pct","smurfs"="smurfs", "age"="age", "cvd_FRS"="cvd_FRS", "chd_FRS"="chd_FRS"), keep=FALSE)
+
+# Try Whole Data
+pred = predict(elastic_model, X)
+age_accl = pred-y
+age_accl_adj = residuals(lm(age_accl ~ y))
+
+graph_df_full = cbind(metab_lipid_prot_merged_df, pred, age_accl_adj) %>%
+  select(primary, age, smurfs, cacs, cacs_pct, gensini, pred, age_accl_adj, cvd_FRS, chd_FRS) %>%
+  mutate(cacsplus = case_when(
+    cacs_pct > 75 ~ "actionable",
+    cacs > 100 ~ "actionable",
+    TRUE ~ "non-actionable"
+  )) %>%
+  # Add Phenotype Data
+  left_join(dat_FRS, by=c("primary"="ID", "cacs"="cacs", "cacs_pct" = "cacs_pct","smurfs"="smurfs", "age"="age", "cvd_FRS"="cvd_FRS", "chd_FRS"="chd_FRS"), keep=FALSE)
+
+
+
+
+
+
 
 # Graph of Proteomic, Metabolomic and Lipidomics Age vs Chronological Age
 
@@ -2206,6 +2779,21 @@ graph_df %>%
   scale_color_gradient2(midpoint=mid, low="blue", mid="white",
                      high="red" ) +
   theme_bw() 
+
+# Graph of Age Acceleration vs Chronological Age
+graph_df %>%
+  filter(is.na(cacs_pct) == FALSE) %>%
+  ggplot() +
+  aes(x = age, y = age_accl_adj, color = cacs_pct) +
+  geom_point() +
+  stat_smooth(method='lm', col='red') +
+  labs(
+    x = "Chronological Age",
+    y = "PML Age Acceleration"
+  ) +
+  scale_color_gradient2(midpoint=mid, low="blue", mid="white", high="red" ) +
+  theme_bw() 
+
 
 # Age Acceleration Histogram
 
@@ -2318,7 +2906,7 @@ graph_df %>%
 
 # Residuals Resilience Score
 cacs_FRS_model = lm(cacs_pct ~ cvd_FRS, graph_df
-                    %>% filter(cacsplus == "actionable")
+                    #%>% filter(cacsplus == "actionable")
                     )
 resilience_residuals = residuals(cacs_FRS_model)
 
@@ -2346,20 +2934,37 @@ resilience_orthogonals = graph_df %>%
         slope = coefficients(cacs_FRS_model)[2], 
         intercept = coefficients(cacs_FRS_model)[1]))
 
-# Graph Resilience vs Age Acceleration
+# Graph Resilience vs Age Acceleration (Adjusted)
 graph_df %>%
-  filter(cacsplus == "actionable") %>%
+  #filter(cacsplus == "actionable") %>%
   filter(is.na(cvd_FRS) == FALSE) %>%
-  mutate(resilience_orthogonals = resilience_orthogonals) %>%
+  mutate(resilience_residuals = resilience_residuals) %>%
   ggplot() +
-  aes(x = age_accl, y = resilience_orthogonals) +
+  aes(x = age_accl_adj, y = resilience_residuals, color = age) +
   geom_point() +
   stat_smooth(method='lm', col='red') +
   labs(
-    x = "Age Acceleration",
+    x = "Age Acceleration (Adjusted)",
+    y = "Resiliency Score",
+  ) +
+  scale_color_gradient(low="green", high="red" ) +
+  theme_bw()
+
+
+# Graph Resilience vs Chronological Age
+graph_df %>%
+  filter(is.na(cvd_FRS) == FALSE) %>%
+  mutate(resilience_residuals = resilience_residuals) %>%
+  ggplot() +
+  aes(x = age, y = resilience_residuals) +
+  geom_point() +
+  stat_smooth(method='lm', col='red') +
+  labs(
+    x = "Chronological Age",
     y = "Resiliency Score",
   ) +
   theme_bw()
+
 
 # FRS against Age (Sense Check)
 
@@ -2372,7 +2977,494 @@ graph_df %>%
     y = "FRS"
   ) +
   theme_bw()
+
+# Graph CACS vs Age Acceleration (Adjusted)
+graph_df %>%
+  #filter(cacsplus == "actionable") %>%
+  filter(is.na(cvd_FRS) == FALSE) %>%
+  ggplot() +
+  aes(x = age_accl_adj, y = cacs_pct, color=age) +
+  geom_point() +
+  stat_smooth(method='lm', col='red') +
+  labs(
+    x = "Age Acceleration (Adjusted)",
+    y = "CACS Percentile",
+  ) +
+  scale_color_gradient(low="green", high="red" ) +
+  theme_bw()
+
+summary(lm(cacs_pct ~ age_accl_adj, graph_df))
+
+# Graph CACS vs FRS
+graph_df %>%
+  #filter(cacsplus == "actionable") %>%
+  filter(is.na(cvd_FRS) == FALSE) %>%
+  ggplot() +
+  aes(x = cvd_FRS, y = cacs_pct) +
+  geom_point() +
+  stat_smooth(method='lm', col='red') +
+  labs(
+    x = "CVD FRS",
+    y = "CACS Percentile",
+  ) +
+  scale_color_gradient(low="green", high="red" ) +
+  theme_bw()
+
+summary(lm(cacs_pct ~ age_accl_adj, graph_df))
+summary(lm(resilience_residuals ~ graph_df %>% filter(is.na(cvd_FRS) == FALSE) %>% pull(age_accl_adj)))
+
+summary(lm(cacs_pct ~ cvd_FRS, graph_df))
+summary(lm(cacs_pct ~ cvd_FRS + age_accl_adj, graph_df))
+
+summary(lm(cvd_FRS ~ age_accl_adj, graph_df))
+
+temp_df =  graph_df_full %>% 
+  filter(is.na(cvd_FRS) == FALSE)
+
+cat_names = c('disc_1000','clinical_site','gender','ethcat','smurfs','cvhx_dm','diabetes_type','cvhx_htn','cvhx_hcl_sr_or_statin','cvhx_hcl_sr','cvhx_angina','cvhx_mi','cvhx_rhythm_svt','cvhx_rhythm_aflutter','cvhx_rhythm_af','cvhx_hf','cvhx_stent','cvhx_cabg','cvhx_heartsx_other','cvhx_cardiacprob_other','mhx_arthritis','mhx_arthritis_ra','mhx_arthritis_osteo','mhx_arthritis_gout','mhx_arthritis_other','mhx_osteoporosis','mhx_stroke','mhx_pad','mhx_dvt_pe','mhx_kidney','mhx_other','fh_ihd','fh_ihd_sex','fh_clottingdisorders','medication_yn','noac','warfarin','anti_coag','asa','clopidogrel','ticagrelor','prasugrel','anti_plt','statin','ezetimibe','fibrate','niacin','babr','plant_sterol','lipid_lowering_unknown','bblocker','ace_arb','ace_i','arb','ccb','diuretic','diur_loop','diur_thiazide','diur_k','diur_non_thiazide','diur_unk','anti_arrhythmic','ivabradine','ppi','antiinflammatory','anti_diab','metformin','sglt2','glp','dpp4','su','insulin','diab_unk','smoking_status','signif_smok','curr_smok','drinking_status','exposure_to_heavy_metals','pet_owner','sx_cp','sx_sob','sx_palp','sx_fatigue','sx_other','sx_acute','sx_ed','stat_rate_ctrl','ctca_ind_gen_cv_assessment','ctca_ind_sx','ctca_ind_ecg','ctca_ind_fh_ihd','ctca_ind_congenital_coronary','ctca_ind_surg','ctca_ind_other','bloods_fast','withdraw_no_fu','withdraw_full','od_50','od_75')
+
+temp_df[,cat_names] = lapply(temp_df[,cat_names], factor)
+
+
+cor(temp_df$cvd_FRS, temp_df$age_accl_adj)
+
+summary(lm(gensini ~ age_accl_adj, graph_df))
 ```
+
+ROC-AUC curve
+
+```{r}
+
+library(ROCit)
+
+log_model_age_accl = glm(as.factor(cacsplus) ~ pred, data=temp_df, family="binomial")
+log_model_frs = glm(as.factor(cacsplus) ~ age, data=temp_df, family="binomial")
+
+rocit_frs = rocit(score = qlogis(log_model_frs$fitted.values), class = log_model_frs$y, method = "emp")
+rocit_age_accl = rocit(score = qlogis(log_model_age_accl$fitted.values), class = log_model_age_accl$y, method = "emp")
+summary(rocit_frs)
+summary(rocit_age_accl)
+
+
+plot(rocit_frs, col = c(1,"gray50"), legend = FALSE, YIndex = FALSE)
+lines(rocit_age_accl$TPR ~ rocit_age_accl$FPR, col = 2, lwd = 2) 
+legend("bottomright", col = c(1,2), c("FRS", "Biological Age"), lwd = 2)
+title(main = "CACS+ vs CACS-")
+
+## Plot ROC curve w/ CI
+ciROC_frs = ciROC(rocit_frs, level = 0.95)
+ciROC_age_accl = ciROC(rocit_age_accl, level = 0.95)
+plot(ciROC_frs, col = 1, legend = FALSE)
+lines(ciROC_age_accl$TPR~ciROC_age_accl$FPR, col = 2, lwd = 2)
+lines(ciROC_age_accl$LowerTPR~ciROC_age_accl$FPR, col = 2, lty = 2)
+lines(ciROC_age_accl$UpperTPR~ciROC_age_accl$FPR, col = 2, lty = 2)
+legend("bottomright", c("FRS", "Biological Age", "95% CI (FRS)","95% CI (bAge)"),
+       lty = c(1,1,2,2), col = c(1,2,1,2), lwd = c(2,2,1,1))
+title(main = "Prediction of CACS+ vs CACS-")
+
+## ROC comparison with pROC
+library(pROC)
+roc.test(as.factor(temp_df$cacsplus) ~ fitted(log_model_age_accl) + fitted(log_model_frs))
+
+
+
+
+```
+
+```{r}
+library(jtools)
+
+model = lm(pred ~ age + gender + ethcat + cvhx_htn + cvhx_dm + bmi + smoking_status + drinking_status + mhx_arthritis + mhx_osteoporosis + mhx_stroke + mhx_pad + mhx_dvt_pe + mhx_kidney, temp_df)
+anova(model)
+summary(model)
+
+num_names = c("Chol","HDL","NT-proBNP","TG","CRP","LP(a)")
+
+temp_df[,num_names] = lapply(temp_df[,num_names], as.numeric)
+
+reduced_df = temp_df %>%
+  drop_na(Chol,HDL,`NT-proBNP`,TG,CRP,`LP(a)`)
+
+model2 = lm(pred ~ age + gender + ethcat + cvhx_htn + cvhx_dm + bmi + smoking_status + drinking_status + Chol + HDL + `NT-proBNP` + TG + CRP + `LP(a)`+ sbp + dbp, reduced_df)
+confint(model)
+summary(model)
+
+groups = list(
+  Demographic = c("Chronological Age", "Sex (ref: Male)", "Indigenous Australian (ref: European)", "Polynesian (ref: European)", "African (ref: European)", "Asian (ref: European)", "Indian (ref: European)", "Middle Eastern (ref: European)", "Hispanic (ref: European)", "Other / Dual Ethnicity (ref: European)"),
+  Behaviours = c("BMI", "Never Smoked (ref: Current Smoker)", "Ex-Smoker (ref: Current Smoker)", "Ex-Drinker (ref: Current Drinker", "Non-Drinker (ref: Current Drinker", "Unknown (ref: Current Drinker"),
+  `Medical History` = c("Hypertension (ref: None)","Diabetes mellitus (ref: None)", "Osteoarthritis (ref: None)", "Osteoporosis (ref: None)", "Stroke/TIA (ref: None)", "Peripheral arterial disease (ref: None)", "DVT/PE (ref: None)", "Kidney disease (ref: None)")
+)
+
+coefs = c("Chronological Age" = "age",
+          "Sex (ref: Male)" = "gender2",
+          "Indigenous Australian (ref: European)" = "ethcat2",
+          "Polynesian (ref: European)" = "ethcat3",
+          "African (ref: European)" = "ethcat4",
+          "Asian (ref: European)" = "ethcat5",
+          "Indian (ref: European)" = "ethcat6",
+          "Middle Eastern (ref: European)" = "ethcat7",
+          "Hispanic (ref: European)" = "ethcat8",
+          "Other / Dual Ethnicity (ref: European)" = "ethcat9",
+          "Hypertension (ref: None)" = "cvhx_htn1",
+          "Diabetes mellitus (ref: None)" = "cvhx_dm1",
+          "BMI" = "bmi",
+          "Never Smoked (ref: Current Smoker)" = "smoking_status2",
+          "Ex-Smoker (ref: Current Smoker)" = "smoking_status3",
+          "Ex-Drinker (ref: Current Drinker" = "drinking_status2",
+          "Non-Drinker (ref: Current Drinker" = "drinking_status3",
+          "Unknown (ref: Current Drinker" = "drinking_status4",
+          "Osteoarthritis (ref: None)" = "mhx_arthritis1",
+          "Osteoporosis (ref: None)" = "mhx_osteoporosis1",
+          "Stroke/TIA (ref: None)" = "mhx_stroke1",
+          "Peripheral arterial disease (ref: None)" = "mhx_pad1",
+          "DVT/PE (ref: None)" = "mhx_dvt_pe1",
+          "Kidney disease (ref: None)" = "mhx_kidney1"
+          )
+
+plot_summs(model, coefs=coefs, groups=groups,colors ="Qual1")
+
+```
+
+### FRS Score w/ Age Acceleration
+
+race (white, aa, chinese, or hispanic)
+age (years) *
+totchol (mg/dL) * <- ours is in mmol/L
+hdl (mg/dL) *
+sbp (mmHg) *
+bp_med (Y/N)
+* ace_i
+* bblocker
+* diuretic
+* ccb
+smoker (Y/N) *
+diabetes (Y/N) *
+bmi *
+lipid_med (Y/N)
+* statin
+fh_heartattack (Y/N)
+cac (Agatson) *
+
+```{r}
+dat_FRS
+
+age_accl = pred-y_test
+
+pheno_df = graph_df %>%
+  left_join(dat_FRS, by=c("primary" = "record_id")) %>%
+  # remove where gender not recorded
+  drop_na(gender) %>%
+  # limits of ascvd limited between 30 and 74
+  filter((age.x<=74) & (age.x>=30)) %>%
+  mutate(
+    gender = case_when(
+      gender==1 ~ 'male',
+      gender==2 ~ 'female'
+      ),
+    HDL = HDL*38.67,
+    Chol = Chol*38.67,
+    bp_med = case_when(
+      ace_arb == 1 ~ 1,
+      bblocker == 1 ~ 1,
+      diuretic == 1 ~ 1,
+      ccb == 1 ~ 1,
+      TRUE ~ 0
+    )
+  )
+  
+
+pheno_df = pheno_df %>%
+  mutate(ascvd_10y_frs = ascvd_10y_frs(gender, age.x, HDL, Chol, sbp, bp_med, curr_smok, cvhx_dm),
+         ascvd_10y_adjusted_frs = )
+
+
+pheno_df['ascvd_10y_frs']
+
+pheno_df %>%
+  ggplot() +
+  aes(x = ascvd_10y_frs, y = cacs_pct.x) +
+  geom_point()
+
+
+dat_FRS['sbp']
+```
+
+## Comparing Efficacy
+
+```{r}
+
+df = read.csv("R2-comparison.csv")
+df %>% 
+  ggplot() +
+  aes(x = Type, y = R2) +
+  facet_wrap(~ï..Assay, scales = "free_y") +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=40,hjust=1)) +
+  geom_point() +
+  geom_errorbar(aes(ymin=Lower, ymax=Upper), width=.1) +
+  labs(
+    x = "Assay & Machine Learning Model",
+    y = "R2 Score",
+    title = "Comparative Performance between ML Models in -omics assays"
+  )
+  
+
+  
+
+
+```
+
+
+## Ensemble Model of Resilience
+
+
+### Calculate Scores
+
+race (white, aa, chinese, or hispanic)
+age (years) *
+totchol (mg/dL) * <- ours is in mmol/L
+hdl (mg/dL) *
+sbp (mmHg) *
+bp_med (Y/N)
+* ace_i
+* bblocker
+* diur_loop
+* diur_k
+* diur_unk
+* ccb
+smoker (Y/N) *
+diabetes (Y/N) *
+bmi *
+lipid_med (Y/N)
+* statin
+fh_heartattack (Y/N)
+cac (Agatson) *
+
+#### SCORE2
+
+```{r}
+
+# ONLY FOR UP TO AND INCLUDING AGE OF 70
+# Assumes a low-risk region
+# sbp -> mmHg
+# tchol -> mmol/L
+# hdl -> mmol/L
+# gender -> 'male' or 'female'
+
+SCORE2_10yr= function(gender, age, curr_smok, sbp, dm, tchol, hdl) {
+  cage = (age-60)/5
+  csbp = (sbp-120)/20
+  ctchol = (tchol-6)/1
+  chdl = (hdl-1.3)/0.5
+  dm = as.numeric(dm)
+  curr_smok = as.numeric(dm)
+  
+  # Rescaling Factors
+  male_RF = c(-0.5699, 0.7476)
+  female_RF = c(-0.7380, 0.7019)
+  
+  # Linear Predictor + Calibration
+  # Male
+  if (gender == 'male') {
+    beta_x = 0.3742*cage + 0.1458*ctchol - 0.2698*chdl + 0.2777*csbp + 
+    0.6457*dm + 0.6012*curr_smok - 0.0281*cage*ctchol + 0.0426*cage*chdl +
+    - 0.0255*cage*csbp - 0.0983*cage*dm - 0.0755*cage*curr_smok
+    
+    ten_yr_risk = 1-0.9605^(exp(beta_x))
+    
+    estimate = 1-exp(-exp(male_RF[1]+male_RF[2]*log(-log(1-ten_yr_risk))))
+    
+  # Female
+  } else if (gender == 'female'){
+    beta_x = 0.4648*cage + 0.1002*ctchol - 0.2606*chdl + 0.3131*csbp + 
+    0.8096*dm + 0.7744*curr_smok - 0.0226*cage*ctchol + 0.0613*cage*chdl +
+    - 0.0277*cage*csbp - 0.1272*cage*dm - 0.1088*cage*curr_smok
+    
+    ten_yr_risk = 1-0.9776^(exp(beta_x))
+    
+    estimate = 1-exp(-exp(female_RF[1]+female_RF[2]*log(-log(1-ten_yr_risk))))
+  }
+  
+  return(estimate*100)
+  
+  
+}
+
+```
+
+#### SCORE2-OP
+
+```{r}
+
+# ONLY FOR ABOVE 70 years old
+# Assumes a low-risk region
+# sbp -> mmHg
+# tchol -> mmol/L
+# hdl -> mmol/L
+# gender -> 'male' or 'female'
+
+SCORE2OP_10yr= function(gender, age, curr_smok, sbp, dm, tchol, hdl) {
+  cage = age-73
+  csbp = sbp-150
+  ctchol = tchol-6
+  chdl = hdl-1.4
+  dm = as.numeric(dm)
+  curr_smok = as.numeric(dm)
+  
+  # Rescaling Factors
+  male_RF = c(-0.34, 1.19)
+  female_RF = c(-0.52, 1.01)
+  
+  # Linear Predictor + Calibration
+  # Male
+  if (gender == 'male') {
+    beta_x = 0.0634*cage + 0.0850*ctchol - 0.3564*chdl + 0.0094*csbp + 
+    0.4245*dm + 0.3524*curr_smok - 0.0073*cage*ctchol + 0.0091*cage*chdl +
+    - 0.0005*cage*csbp - 0.0174*cage*dm - 0.0247*cage*curr_smok
+    
+    ten_yr_risk = 1-0.7576^(exp(beta_x-0.0929))
+    
+    estimate = 1-exp(-exp(male_RF[1]+male_RF[2]*log(-log(1-ten_yr_risk))))
+    
+  # Female
+  } else if (gender == 'female'){
+    beta_x = 0.0789*cage + 0.0605*ctchol - 0.3040*chdl + 0.0102*csbp + 
+    0.6010*dm + 0.4921*curr_smok - 0.0009*cage*ctchol + 0.0154*cage*chdl +
+    - 0.0004*cage*csbp - 0.0107*cage*dm - 0.0255*cage*curr_smok
+    
+    
+    ten_yr_risk = 1-0.8082^(exp(beta_x-0.229))
+    
+    estimate = 1-exp(-exp(female_RF[1]+female_RF[2]*log(-log(1-ten_yr_risk))))
+  }
+  
+  return(estimate*100)
+  
+  
+}
+
+```
+
+```{r}
+
+
+dat_FRS
+
+pheno_df = dat_FRS %>%
+  # remove where gender not recorded
+  drop_na(gender) %>%
+  # limits of ascvd limited between 30 and 74
+  filter((age<=74) & (age>=30)) %>%
+  mutate(
+    # refactor gender
+    gender = case_when(
+      gender==1 ~ 'male',
+      gender==2 ~ 'female'
+      ),
+    # convert from mmol/L to mg/dL
+    HDL_mgdl = HDL*38.67,
+    Chol_mgdl = Chol*38.67,
+    # new variable presence or absence of blood pressure meds
+    bp_med = case_when(
+      ace_arb == 1 ~ 1,
+      bblocker == 1 ~ 1,
+      diuretic == 1 ~ 1,
+      ccb == 1 ~ 1,
+      TRUE ~ 0
+    ),
+    # new variable presence or absence of lipid lowering meds
+    lipid_med = case_when(
+      statin == 1 ~ 1,
+      ezetimibe == 1 ~ 1,
+      fibrate == 1 ~ 1,
+      niacin == 1 ~ 1,
+      babr == 1 ~ 1,
+      plant_sterol == 1 ~ 1,
+      lipid_lowering_unknown == 1 ~ 1,
+      TRUE ~ 0
+    ),
+    # assume no history of IHD if NA
+    fh_ihd = case_when(
+      fh_ihd == 1 ~ 1,
+      fh_ihd == 0 ~ 0,
+      is.na(fh_ihd) ~ 0
+    ),
+    # CACS as number
+    cacs = as.numeric(cacs),
+    # ACCAHA Ethnicity
+    accaha_eth = case_when(
+      ethcat == 1 ~ 'white',
+      ethcat == 4 ~ 'aa',
+      TRUE ~ 'other'
+    ),
+    # Unresolved: MESA only contains 4 ethnicity categories, what do we do with other?
+    mesa_eth = case_when(
+      ethcat == 1 ~ 'white',
+      ethcat == 2 ~ 'aa',
+      ethcat == 3 ~ 'white', # contentious Polynesian
+      ethcat == 4 ~ 'aa',
+      ethcat == 5 ~ 'chinese',
+      ethcat == 7 ~ 'white',
+      ethcat == 8 ~ 'hispanic',
+      ethcat == 9 ~ 'white', # contentious mixed/Other
+      TRUE ~ 'white' # if NA assume white
+    ),
+    
+  )
+
+pheno_df = pheno_df %>%
+  mutate(
+    # FRS Score
+    ascvd_10y_frs = ascvd_10y_frs(gender, age, HDL_mgdl, Chol_mgdl, sbp, bp_med, curr_smok, cvhx_dm),
+    # ASCVD (Pooled Cohort Equations - USA)
+    ascvd_10y_accaha = ascvd_10y_accaha(accaha_eth, gender, age, Chol_mgdl, HDL_mgdl, sbp, bp_med, curr_smok, cvhx_dm),
+    # MESA CHD
+    chd_10y_mesa = chd_10y_mesa(mesa_eth, gender, age, Chol_mgdl, HDL_mgdl,lipid_med, sbp, bp_med, curr_smok, cvhx_dm, fh_ihd),
+    # MESA CHD w/ CAC
+    chd_10y_mesa_cac = chd_10y_mesa_cac(mesa_eth, gender, age, Chol_mgdl, HDL_mgdl,lipid_med, sbp, bp_med, curr_smok, cvhx_dm, fh_ihd, cacs),
+    # SCORE2 <= 70 year olds
+    SCORE2_10y = SCORE2_10yr(gender, age, curr_smok, sbp, cvhx_dm, Chol, HDL),
+    # SCORE2-OP > 70 year olds
+    SCORE2OP_10yr= SCORE2OP_10yr(gender, age, curr_smok, sbp, cvhx_dm, Chol, HDL)
+    )
+
+
+```
+
+
+```{r}
+dat_FRS
+library(CVrisk)
+
+
+dat_FRS %>%
+  select(age, gender, bmi, cvhx_dm, curr_smok, sbp, cacs, HDL)
+
+
+colnames(dat_FRS)
+
+lm()
+```
+
+```{r}
+
+ensemble_residuals = function(y, df, ...) {
+  for(model in list(...)){
+    predictions = predict(model, df)
+    
+  }
+}
+
+predict(elastic_model, X_test)
+
+resilience_residuals = residuals(cacs_FRS_model)
+
+test = lm(age ~ sbp, dat_FRS)
+
+predict(test, dat_FRS)
+
+```
+
 
 
 ## Junk Code
