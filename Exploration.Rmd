@@ -19,7 +19,7 @@ library(naniar)
 library(factoextra)
 #library(sigFeature)
 library(blockForest)
-source("kdm_calc.R")
+#source("kdm_calc.R")
 
 # Modeling packages
 library(tensorflow)
@@ -29,6 +29,7 @@ library(tfruns)        # for additional grid search & model training functions
 library(boot)
 library(CVrisk)
 library(limma)
+library(plotly)
 ```
 
 # Biological Age
@@ -49,6 +50,8 @@ metadata(bioheart_mae)$variable_definition
 
 # Patient Clinical Data
 colData(bioheart_mae)
+
+dat_FRS
 
 # FRS
 dat_FRS %>%
@@ -3305,6 +3308,7 @@ SCORE2_10yr= function(gender, age, curr_smok, sbp, dm, tchol, hdl) {
 # gender -> 'male' or 'female'
 
 SCORE2OP_10yr= function(gender, age, curr_smok, sbp, dm, tchol, hdl) {
+  print(gender)
   cage = age-73
   csbp = sbp-150
   ctchol = tchol-6
@@ -3453,13 +3457,20 @@ calcFramingham91 <- function(df,
 
 #### All Score Calculations
 
+ethcat
+1 = European
+2 = Indigenous Australia
+3 = Polynesian
+4 = African
+5 = Asian
+6 = Indian
+7 = Middle Eastern
+8 = Hispanic
+9 = Other / Dual Ethnicity
+
 ```{r}
 
-
 dat_FRS
-
-pheno_df %>%
-  select(cacs, cacs_pct)
 
 pheno_df = dat_FRS %>%
   # remove where gender or cac or cacs_pct not recorded
@@ -3527,6 +3538,7 @@ pheno_df = dat_FRS %>%
   )
 
 pheno_df = pheno_df %>%
+  rowwise() %>%
   mutate(
     # FRS Score
     ascvd_10y_frs = ascvd_10y_frs(gender, age, HDL_mgdl, Chol_mgdl, sbp, bp_med, curr_smok, cvhx_dm),
@@ -3576,18 +3588,50 @@ score_df %>%
 
 score_df = score_df %>% drop_na()
 
+score_df
+
 ```
 
 ### Calculate Residuals
 
 ```{r}
-# Calculate residuals of linear model regressing CACS %tile on score
+# Calculate vertical residuals of linear model regressing CACS %tile on score
 calculate_residuals = function(cacs_pct, score) {
   lm = lm(cacs_pct ~ score)
   return(residuals(lm))
 }
 
+# Calculate diagonal residuals of linear model regressing CACS%tile on score
 
+dist_point_line = function(a, slope, intercept) {
+  x_0 = a[1]
+  y_0 = a[2]
+  d = abs(slope*x_0-y_0+intercept)/sqrt(slope^2+1)
+  # positive resilience score if high risk low cacs
+  if (y_0 <= slope*x_0+intercept) {
+    return(d)
+  } else {
+    return(-d)
+  }
+  
+}
+
+calculate_residuals = function(cacs_pct, score) {
+  lm = lm(cacs_pct ~ score)
+  residuals = apply(cbind(score, cacs_pct), 1, dist_point_line,
+        slope = coefficients(lm)[2], 
+        intercept = coefficients(lm)[1]
+  )
+  return(residuals)
+}
+
+```
+
+
+
+### Classifying Residuals
+
+```{r}
 # Weird unresolved issue where people with 0 risk but high CACS percentile
 lm = lm(score_df$cacs_pct ~ score_df$ascvd_10y_accaha)
 summary(lm)
@@ -3599,40 +3643,39 @@ ggplot() +
   geom_smooth(method = 'lm')
 
 # Calculates all residuals for all scores
+#score_df = score_df %>%
+#  mutate(
+#    res_ascvd_10y_frs = calculate_residuals(cacs_pct, ascvd_10y_frs),
+#    res_ascvd_10y_accaha = calculate_residuals(cacs_pct, ascvd_10y_accaha),
+#    res_chd_10y_mesa = calculate_residuals(cacs_pct, chd_10y_mesa),
+#    res_SCORE2 = calculate_residuals(cacs_pct, SCORE2)
+#  )
+
 score_df = score_df %>%
+  mutate(ln_cacs = log(cacs+1)) %>%
   mutate(
-    res_ascvd_10y_frs = calculate_residuals(cacs_pct, ascvd_10y_frs),
-    res_ascvd_10y_accaha = calculate_residuals(cacs_pct, ascvd_10y_accaha),
-    res_chd_10y_mesa = calculate_residuals(cacs_pct, chd_10y_mesa),
-    res_SCORE2 = calculate_residuals(cacs_pct, SCORE2)
+    res_ascvd_10y_frs = calculate_residuals(ln_cacs, ascvd_10y_frs),
+    res_ascvd_10y_accaha = calculate_residuals(ln_cacs, ascvd_10y_accaha),
+    res_chd_10y_mesa = calculate_residuals(ln_cacs, chd_10y_mesa),
+    res_SCORE2 = calculate_residuals(ln_cacs, SCORE2)
   )
+
+
 
 # Showing how many subjects have residuals of non-uniform sign
 score_df %>%
   mutate(s = res_ascvd_10y_frs * res_ascvd_10y_accaha * res_chd_10y_mesa * res_SCORE2) %>%
   filter(s < 0)
 
+# Type 1 Classification - Absolute quantiles same for resilient and susceptible
+
 # Determine class of subject
 # Find the quantile according to the percentile cutoff for absolute residuals
 # Absolute residuals below this quantile are considered reference
 # Residuals more negative than the quantile are resilient
 # Residuals more positive than the quantile are considered susceptible
-# top_vs_bottom_quantile = TRUE sets groups to be top 10% percentile vs bottom 10% percentile
-calculate_classes = function(residuals, reference_cutoff = 0.3, top_vs_bottom_quantile = FALSE) {
-  lower_quantile = quantile(abs(residuals), probs = reference_cutoff)
-  upper_quantile = quantile(abs(residuals), probs = 1-reference_cutoff)
-  if (top_vs_bottom_quantile == FALSE) {
-    cohort_split = function(x) {
-      if (abs(x) <= lower_quantile) {
-        return(as.factor("reference"))
-      } else if (x < -lower_quantile) {
-        return(as.factor("resilient"))
-      } else {
-        return(as.factor("susceptible"))
-      }
-    }
-  } else {
-    cohort_split = function(x) {
+calculate_classes = function(residuals, lower_quantile, upper_quantile, reference_cutoff = 0.2) {
+  cohort_split = function(x) {
       if (abs(x) <= lower_quantile){
         return(as.factor("reference"))
       } else if (x < -upper_quantile) {
@@ -3643,28 +3686,121 @@ calculate_classes = function(residuals, reference_cutoff = 0.3, top_vs_bottom_qu
         return(as.factor("ignore"))
       }
     }
-  }
   return(sapply(residuals, FUN = cohort_split))
 }
 
+reference_cutoff = 0.2
+lower_quantile_frs = quantile(abs(score_df$res_ascvd_10y_frs), probs = reference_cutoff)
+upper_quantile_frs = quantile(abs(score_df$res_ascvd_10y_frs), probs = 1-reference_cutoff)
+
+lower_quantile_accaha = quantile(abs(score_df$res_ascvd_10y_accaha), probs = reference_cutoff)
+upper_quantile_accaha = quantile(abs(score_df$res_ascvd_10y_accaha), probs = 1-reference_cutoff)
+
+lower_quantile_mesa = quantile(abs(score_df$res_chd_10y_mesa), probs = reference_cutoff)
+upper_quantile_mesa = quantile(abs(score_df$res_chd_10y_mesa), probs = 1-reference_cutoff)
+
+lower_quantile_SCORE2 = quantile(abs(score_df$res_SCORE2), probs = reference_cutoff)
+upper_quantile_SCORE2 = quantile(abs(score_df$res_SCORE2), probs = 1-reference_cutoff)
 
 score_df = score_df %>%
   mutate(
-    class_ascvd_10y_frs = calculate_classes(res_ascvd_10y_frs, top_vs_bottom_quantile = TRUE),
-    class_ascvd_10y_accaha = calculate_classes(res_ascvd_10y_accaha, top_vs_bottom_quantile = TRUE),
-    class_chd_10y_mesa = calculate_classes(res_chd_10y_mesa, top_vs_bottom_quantile = TRUE),
-    class_SCORE2 = calculate_classes(res_SCORE2, top_vs_bottom_quantile = TRUE)
+    class_ascvd_10y_frs = calculate_classes(res_ascvd_10y_frs, lower_quantile_frs, upper_quantile_frs),
+    class_ascvd_10y_accaha = calculate_classes(res_ascvd_10y_accaha, lower_quantile_accaha, upper_quantile_accaha),
+    class_chd_10y_mesa = calculate_classes(res_chd_10y_mesa, lower_quantile_mesa, upper_quantile_mesa),
+    class_SCORE2 = calculate_classes(res_SCORE2, lower_quantile_SCORE2, upper_quantile_SCORE2)
   )
 
+# Type 2 Classification - Absolute quantiles different for resilient and susceptible
+# Find the quantiles for susceptible and resilient based on only residuals either positive or negative
+calculate_classes_2 = function(residuals, lower_quantile_resilient, upper_quantile_resilient, lower_quantile_susceptible, upper_quantile_susceptible) {
+  
+  cohort_split = function(x) {
+      if ((x >= upper_quantile_resilient) & (x <= lower_quantile_susceptible)) {
+        return(as.factor("reference"))
+      } else if (x < lower_quantile_resilient) {
+        return(as.factor("resilient"))
+      } else if (x > upper_quantile_susceptible){
+        return(as.factor("susceptible"))
+      } else {
+        return(as.factor("ignore"))
+      }
+  }
+  return(sapply(residuals, FUN = cohort_split))
+  }
 
-score_df %>%
-  ggplot() +
-    aes(x = ascvd_10y_frs, y = cacs_pct, color = class_ascvd_10y_frs, group = 1) +
-    geom_point() +
-    geom_smooth(method = 'lm') +
-    labs(y = "CACS (%tile)",
-         title = "Lower 30%tile vs Upper 30%tile")
+apply_classes = function(score_df, reference_cutoff = 0.20) {
+    lower_quantile_resilient_frs = quantile(score_df$res_ascvd_10y_frs[score_df$res_ascvd_10y_frs < 0], probs =   reference_cutoff)
+  upper_quantile_resilient_frs = quantile(score_df$res_ascvd_10y_frs[score_df$res_ascvd_10y_frs < 0], probs =   1-reference_cutoff/2)
+  lower_quantile_susceptible_frs = quantile(score_df$res_ascvd_10y_frs[score_df$res_ascvd_10y_frs > 0], probs =   reference_cutoff/2)
+  upper_quantile_susceptible_frs = quantile(score_df$res_ascvd_10y_frs[score_df$res_ascvd_10y_frs > 0], probs =   1-reference_cutoff)
+  cat(lower_quantile_resilient_frs, ", ", upper_quantile_resilient_frs, ", ", lower_quantile_susceptible_frs, ", ", upper_quantile_susceptible_frs, "\n")
 
+  
+  lower_quantile_resilient_accaha = quantile(score_df$res_ascvd_10y_accaha[score_df$res_ascvd_10y_accaha < 0], probs =   reference_cutoff)
+  upper_quantile_resilient_accaha = quantile(score_df$res_ascvd_10y_accaha[score_df$res_ascvd_10y_accaha < 0], probs =   1-reference_cutoff/2)
+  lower_quantile_susceptible_accaha = quantile(score_df$res_ascvd_10y_accaha[score_df$res_ascvd_10y_accaha > 0], probs =   reference_cutoff/2)
+  upper_quantile_susceptible_accaha = quantile(score_df$res_ascvd_10y_accaha[score_df$res_ascvd_10y_accaha > 0], probs =   1-reference_cutoff)
+  
+  lower_quantile_resilient_mesa = quantile(score_df$res_chd_10y_mesa[score_df$res_chd_10y_mesa < 0], probs =   reference_cutoff)
+  upper_quantile_resilient_mesa = quantile(score_df$res_chd_10y_mesa[score_df$res_chd_10y_mesa < 0], probs =   1-reference_cutoff/2)
+  lower_quantile_susceptible_mesa = quantile(score_df$res_chd_10y_mesa[score_df$res_chd_10y_mesa > 0], probs =   reference_cutoff/2)
+  upper_quantile_susceptible_mesa = quantile(score_df$res_chd_10y_mesa[score_df$res_chd_10y_mesa > 0], probs =   1-reference_cutoff)
+  
+  lower_quantile_resilient_SCORE2 = quantile(score_df$res_SCORE2[score_df$res_SCORE2 < 0], probs = reference_cutoff)
+  upper_quantile_resilient_SCORE2 = quantile(score_df$res_SCORE2[score_df$res_SCORE2 < 0], probs = 1-reference_cutoff/2)
+  lower_quantile_susceptible_SCORE2 = quantile(score_df$res_SCORE2[score_df$res_SCORE2 > 0], probs = reference_cutoff/2)
+  upper_quantile_susceptible_SCORE2 = quantile(score_df$res_SCORE2[score_df$res_SCORE2 > 0], probs = 1-reference_cutoff)
+  
+  
+  score_df = score_df %>%
+    mutate(
+      class_ascvd_10y_frs = calculate_classes_2(res_ascvd_10y_frs, lower_quantile_resilient_frs,   upper_quantile_resilient_frs, lower_quantile_susceptible_frs, upper_quantile_susceptible_frs),
+      class_ascvd_10y_accaha = calculate_classes_2(res_ascvd_10y_accaha, lower_quantile_resilient_accaha,   upper_quantile_resilient_accaha, lower_quantile_susceptible_accaha, upper_quantile_susceptible_accaha),
+      class_chd_10y_mesa = calculate_classes_2(res_chd_10y_mesa, lower_quantile_resilient_mesa,   upper_quantile_resilient_mesa, lower_quantile_susceptible_mesa, upper_quantile_susceptible_mesa),
+      class_SCORE2 = calculate_classes_2(res_SCORE2, lower_quantile_resilient_SCORE2, upper_quantile_resilient_SCORE2,   lower_quantile_susceptible_SCORE2, upper_quantile_susceptible_SCORE2)
+    )
+  return(score_df)
+}
+
+
+score_df = apply_classes(score_df, reference_cutoff = 0.20)
+write.csv(score_df, "~/desktop/score_df.csv", row.names = FALSE)
+```
+
+### Visualise Classifications
+
+```{r}
+
+long_score_df = score_df %>%
+  select(-starts_with("res")) %>%
+  pivot_longer(cols = c("ascvd_10y_frs", "ascvd_10y_accaha", "chd_10y_mesa", "SCORE2"), names_to = "score_type", values_to = "score") %>%
+  pivot_longer(cols = starts_with("class_"), names_to = "class_type", values_to = "classification") %>%
+  mutate(class_type = gsub("class_", "", class_type)) %>%
+  filter(score_type == class_type) %>%
+  mutate(score_type = as.factor(score_type)) %>%
+  select(-class_type)
+
+# create a list of unique score types
+score_types = unique(long_score_df$score_type)
+
+# create a plot for each score type
+plots = lapply(score_types, function(score_type) {
+  # subset the data for the current score type
+  df_subset = long_score_df[long_score_df$score_type == score_type,]
+  print(df_subset)
+  # create the plot
+  #ggplot(df_subset, aes(x = score, y = cacs_pct)) +
+  ggplot(df_subset, aes(x=score, y=ln_cacs)) +
+    geom_point(aes(color = classification)) +
+    geom_smooth(method = 'lm', se = FALSE) +
+    theme_bw() +
+    labs(title = paste("CACS vs", score_type),
+         x = "Score Value", y = "ln(CACS+1)")
+})
+
+# arrange the plots in a grid
+p = gridExtra::grid.arrange(grobs = plots, ncol = 2, nrow = 2)
+ggsave("~/Desktop/myplot.png", plot = p, width = 12, height = 8, dpi = 300)
 
 ```
 
@@ -3675,12 +3811,34 @@ score_df %>%
 score_df = score_df %>%
   rowwise() %>%
   mutate(
+    
     consensus_class = as.factor(names(which.max(table(c(class_ascvd_10y_frs, class_ascvd_10y_accaha, class_chd_10y_mesa, class_SCORE2)))))
   )
 
+
+
+# Following function is used to check which rows do not have some sort of majority concordance.
+## define function to check if at least 3 out of 4 columns are equal
+check_equal <- function(x) {
+  sum(duplicated(x)) >= 2
+}
+
+## apply function to each row of the data frame and get row indices where condition is not met
+rows_not_equal <- which(!apply(score_df[, c("class_ascvd_10y_frs", "class_ascvd_10y_accaha", "class_chd_10y_mesa", "class_SCORE2")], 1, check_equal))
+score_df[rows_not_equal,]
+pheno_df %>%
+  filter(ID %in% c(score_df[rows_not_equal, 'ID'] %>% pull()))
+
+
+
+table(score_df$consensus_class)
 ```
 
 ### Comparing Classes
+
+#### Metabolomics
+
+#### Differential Expression Analysis
 
 ```{r}
 
@@ -3716,12 +3874,14 @@ graph_df %>%
 
 ```
 
+
+
+
 ```{r}
+
 
 # PCA Analysis
 metab_pca = graph_df %>%
-  filter(gender == 1) %>%
-  filter(age > 60) %>%
   select(-c(ID, consensus_class, colname, gender, age, smurfs, cacs, cacs_pct, gensini)) %>%
   #scale() %>%
   prcomp()
@@ -3730,12 +3890,27 @@ fviz_eig(metab_pca, addlabels = TRUE)
 
 fviz_pca_ind(metab_pca,
              geom.ind = "point",
+             col.ind = graph_df %>% select(consensus_class) %>% pull(),
+             palette = c("#00AFBB", "#E7B800", "#FC4E07", "#000000"),
+             addEllipses = TRUE,
+             legend.title = "Groups")
+
+metab_pca_limited = graph_df %>%
+  filter(gender == 1) %>%
+  filter(age > 60) %>%
+  select(-c(ID, consensus_class, colname, gender, age, smurfs, cacs, cacs_pct, gensini)) %>%
+  #scale() %>%
+  prcomp()
+
+
+fviz_pca_ind(metab_pca_limited,
+             geom.ind = "point",
              col.ind = graph_df %>% filter(gender == 1) %>% filter(age > 60) %>% select(consensus_class) %>% pull(),
              palette = c("#00AFBB", "#E7B800", "#FC4E07", "#000000"),
              addEllipses = TRUE,
              legend.title = "Groups")
 
-fviz_pca_ind(metab_pca,
+fviz_pca_ind(metab_pca_limited,
              geom.ind = "point",
              col.ind = graph_df %>% filter(gender == 1) %>% filter(age > 60) %>% select(cacs_pct) %>% pull(),
              gradient.cols = c("green", "red"),
@@ -3743,26 +3918,87 @@ fviz_pca_ind(metab_pca,
 ```
 
 ```{r}
-lm_df = graph_df %>%
+filtered_graph_df = graph_df #%>%
   #filter(gender == 1) %>%
-  #filter(age > 60) %>%
+  #filter(age > 60) 
+lm_df = filtered_graph_df %>%
   select(-c(ID, consensus_class, colname, gender, age, smurfs, cacs, cacs_pct, gensini)) %>%
   t()
 
 rownames(lm_df)
 dim(lm_df)
 dim(design)
-design = model.matrix(~ consensus_class + gender + age, graph_df)
+design = model.matrix(~ consensus_class, filtered_graph_df)
 fit = lmFit(lm_df, design)
 fit = eBayes(fit)
 topTable(fit)
 
-CM = makeContrasts(consensus_classresilient = consensus_classresilient - consensus_classreference, levels = design)
+#CM = makeContrasts(consensus_classresilient = consensus_classresilient - consensus_classreference, levels = design)
+#CM = makeContrasts(consensus_classresilient = consensus_classresilient - consensus_classsusceptible, levels = design)
+CM = makeContrasts(consensus_classresilient = consensus_classsusceptible - consensus_classreference, levels = design)
 constrast_fit = contrasts.fit(fit, contrast = CM)
 constrast_fit = eBayes(constrast_fit)
 topTable(constrast_fit)
+
+table(filtered_graph_df$consensus_class)
+
+
 ```
 
+#### Univariate Analysis
+
+```{r}
+filtered_graph_df = filtered_graph_df %>%
+  select(-c(ID, colname, gender, age, smurfs, cacs, cacs_pct, gensini)) %>%
+  filter(consensus_class %in% c("resilient", "reference"))
+  
+filtered_graph_df$consensus_class = droplevels(filtered_graph_df$consensus_class)
+# Explicitly set reference level to reference class
+filtered_graph_df$consensus_class = relevel(filtered_graph_df$consensus_class, ref = "reference")
+lapply(models, summary)
+
+models = apply(filtered_graph_df[,-1], 
+               MARGIN=2,
+               FUN = function(x) glm(filtered_graph_df$consensus_class ~ x, family = "binomial"))
+
+# Extract the p-value for each variable in the glm models using lapply()
+results_list = lapply(models, function(model) {
+  p_value = summary(model)$coefficients[2, "Pr(>|z|)"]
+  odds_ratio = exp(summary(model)$coefficients[2, "Estimate"])
+  data.frame(p_value = p_value, odds_ratio = odds_ratio, stringsAsFactors = FALSE)
+})
+
+# Combine the data frames in the results list into a single data frame using do.call() and rbind()
+results_df = do.call(rbind, results_list)
+
+# Adjust p_value
+adj_p = p.adjust(results_df$p_value, method="fdr")
+
+# Print the results
+results_df = results_df %>%
+  mutate(adj_p_value = adj_p) %>%
+  arrange(p_value)
+  
+
+knitr::kable(results_df)
+
+```
+
+##### Multivariate Analysis
+
+```{r}
+mlr_df = 
+filtered_graph_df %>%
+  select(-c(colname, gender, age, smurfs, cacs, cacs_pct, gensini)) %>%
+  column_to_rownames(var = "ID") %>%
+  filter(consensus_class %in% c("resilient", "reference"))
+
+
+model = glm(consensus_class ~ ., mlr_df, family = binomial)
+summary(model)
+
+levels(filtered_graph_df$consensus_class)
+```
 
 ```{r}
 
@@ -3819,6 +4055,8 @@ score_df %>%
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
 
 ```
+#### Proteomics
+
 ```{r}
 
 prot_exp = longFormat(bioheart_mae[,,'Proteomics'],
@@ -3844,6 +4082,35 @@ score_df %>%
   geom_boxplot() +
   theme_bw() +
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+```
+
+```{r}
+
+prot_patient_df = score_df %>%
+  select(ID, consensus_class) %>%
+  inner_join(prot_df, by=c('ID'='primary'))
+
+
+lm_df = prot_patient_df %>%
+  select(-c(ID, consensus_class, age, smurfs, cacs, cacs_pct, gensini)) %>%
+  t()
+
+design = model.matrix(~ consensus_class, prot_patient_df)
+
+rownames(lm_df)
+dim(lm_df)
+dim(design)
+fit = lmFit(lm_df, design)
+fit = eBayes(fit)
+topTable(fit)
+
+CM = makeContrasts(consensus_classresilient = consensus_classresilient - consensus_classsusceptible, levels = design)
+constrast_fit = contrasts.fit(fit, contrast = CM)
+constrast_fit = eBayes(constrast_fit)
+topTable(constrast_fit)
+
+table(filtered_graph_df$consensus_class)
 
 ```
 
