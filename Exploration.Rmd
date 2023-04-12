@@ -3566,7 +3566,7 @@ pheno_df = pheno_df %>%
   )
 
 score_df = pheno_df %>%
-  select(ID, cacs, cacs_pct, ascvd_10y_frs, ascvd_10y_accaha, chd_10y_mesa, SCORE2)
+  dplyr::select(ID, cacs, cacs_pct, ascvd_10y_frs, ascvd_10y_accaha, chd_10y_mesa, SCORE2)
 # Picked MESA without CAC since CAC will be the y-axis when calculating residuals
 # 112 missing values out of range but no particular pattern in its distribution
 score_df %>%
@@ -3597,8 +3597,14 @@ score_df
 ```{r}
 # Calculate vertical residuals of linear model regressing CACS %tile on score
 calculate_residuals = function(cacs_pct, score) {
-  lm = lm(cacs_pct ~ score)
+  lm = lm(cacs_pct ~ score - 1) # forcing through zero
   return(residuals(lm))
+}
+
+# Calculate studentised vertial residuals of linear model regressing CACS %tile on score
+studentised_residuals = function(cacs_pct, score) {
+  lm = lm(cacs_pct ~ score - 1) # forcing through zero
+  return(rstudent(lm))
 }
 
 # Calculate diagonal residuals of linear model regressing CACS%tile on score
@@ -3627,29 +3633,7 @@ calculate_residuals = function(cacs_pct, score) {
 
 ```
 
-
-
-### Classifying Residuals
-
 ```{r}
-# Weird unresolved issue where people with 0 risk but high CACS percentile
-lm = lm(score_df$cacs_pct ~ score_df$ascvd_10y_accaha)
-summary(lm)
-residuals(lm)
-
-ggplot() +
-  aes(x = score_df$ascvd_10y_accaha, y = score_df$cacs_pct) +
-  geom_point() +
-  geom_smooth(method = 'lm')
-
-# Calculates all residuals for all scores
-#score_df = score_df %>%
-#  mutate(
-#    res_ascvd_10y_frs = calculate_residuals(cacs_pct, ascvd_10y_frs),
-#    res_ascvd_10y_accaha = calculate_residuals(cacs_pct, ascvd_10y_accaha),
-#    res_chd_10y_mesa = calculate_residuals(cacs_pct, chd_10y_mesa),
-#    res_SCORE2 = calculate_residuals(cacs_pct, SCORE2)
-#  )
 
 score_df = score_df %>%
   mutate(ln_cacs = log(cacs+1)) %>%
@@ -3658,16 +3642,27 @@ score_df = score_df %>%
     res_ascvd_10y_accaha = calculate_residuals(ln_cacs, ascvd_10y_accaha),
     res_chd_10y_mesa = calculate_residuals(ln_cacs, chd_10y_mesa),
     res_SCORE2 = calculate_residuals(ln_cacs, SCORE2)
+  ) %>%
+  mutate(
+    studres_ascvd_10y_frs = studentised_residuals(ln_cacs, ascvd_10y_frs),
+    studres_ascvd_10y_accaha = studentised_residuals(ln_cacs, ascvd_10y_accaha),
+    studres_chd_10y_mesa = studentised_residuals(ln_cacs, chd_10y_mesa),
+    studres_SCORE2 = studentised_residuals(ln_cacs, SCORE2)
   )
-
-
 
 # Showing how many subjects have residuals of non-uniform sign
 score_df %>%
   mutate(s = res_ascvd_10y_frs * res_ascvd_10y_accaha * res_chd_10y_mesa * res_SCORE2) %>%
   filter(s < 0)
 
-# Type 1 Classification - Absolute quantiles same for resilient and susceptible
+```
+
+### Classifying Residuals
+
+#### Classification Functions
+
+```{r}
+# Type 1 Classification - Absolute quantiles same for resilient and susceptible (DEPRECATED)
 
 # Determine class of subject
 # Find the quantile according to the percentile cutoff for absolute residuals
@@ -3710,6 +3705,9 @@ score_df = score_df %>%
     class_SCORE2 = calculate_classes(res_SCORE2, lower_quantile_SCORE2, upper_quantile_SCORE2)
   )
 
+```
+
+``` {r}
 # Type 2 Classification - Absolute quantiles different for resilient and susceptible
 # Find the quantiles for susceptible and resilient based on only residuals either positive or negative
 calculate_classes_2 = function(residuals, lower_quantile_resilient, upper_quantile_resilient, lower_quantile_susceptible, upper_quantile_susceptible) {
@@ -3728,6 +3726,13 @@ calculate_classes_2 = function(residuals, lower_quantile_resilient, upper_quanti
   return(sapply(residuals, FUN = cohort_split))
   }
 
+```
+
+#### Method 1: By Each Score
+
+This first method took set of residuals from each of the difference scores and classifies them separately. The intention was then to take the majority vote of classifications.
+
+```{r}
 apply_classes = function(score_df, reference_cutoff = 0.20) {
     lower_quantile_resilient_frs = quantile(score_df$res_ascvd_10y_frs[score_df$res_ascvd_10y_frs < 0], probs =   reference_cutoff)
   upper_quantile_resilient_frs = quantile(score_df$res_ascvd_10y_frs[score_df$res_ascvd_10y_frs < 0], probs =   1-reference_cutoff/2)
@@ -3767,18 +3772,18 @@ score_df = apply_classes(score_df, reference_cutoff = 0.20)
 write.csv(score_df, "~/desktop/score_df.csv", row.names = FALSE)
 ```
 
-### Visualise Classifications
+Visualise
 
 ```{r}
-
+library(tidyr)
 long_score_df = score_df %>%
-  select(-starts_with("res")) %>%
+  dplyr::select(-starts_with("res")) %>%
   pivot_longer(cols = c("ascvd_10y_frs", "ascvd_10y_accaha", "chd_10y_mesa", "SCORE2"), names_to = "score_type", values_to = "score") %>%
   pivot_longer(cols = starts_with("class_"), names_to = "class_type", values_to = "classification") %>%
   mutate(class_type = gsub("class_", "", class_type)) %>%
   filter(score_type == class_type) %>%
   mutate(score_type = as.factor(score_type)) %>%
-  select(-class_type)
+  dplyr::select(-class_type)
 
 # create a list of unique score types
 score_types = unique(long_score_df$score_type)
@@ -3792,11 +3797,24 @@ plots = lapply(score_types, function(score_type) {
   #ggplot(df_subset, aes(x = score, y = cacs_pct)) +
   ggplot(df_subset, aes(x=score, y=ln_cacs)) +
     geom_point(aes(color = classification)) +
-    geom_smooth(method = 'lm', se = FALSE) +
+    geom_smooth(formula = y ~ x - 1, method = 'lm', se = FALSE) +
     theme_bw() +
     labs(title = paste("CACS vs", score_type),
          x = "Score Value", y = "ln(CACS+1)")
 })
+
+
+par(mfrow=c(2,2))
+lapply(score_types, function(score_type) {
+  
+  df_subset = long_score_df[long_score_df$score_type == score_type,]
+  df_subset = column_to_rownames(df_subset, var = "ID")
+  print(df_subset)
+  lm = lm(score ~ ln_cacs, df_subset)
+  plot(lm, 4, main = score_type)
+  
+})
+
 
 # arrange the plots in a grid
 p = gridExtra::grid.arrange(grobs = plots, ncol = 2, nrow = 2)
@@ -3834,14 +3852,79 @@ pheno_df %>%
 table(score_df$consensus_class)
 ```
 
+#### Method 2: Average Studentised Residual
+
+Externally studentised residuals. Importantly we assume the normality assumptions of the original model is met.
+
+https://stats.stackexchange.com/questions/204708/is-studentized-residuals-v-s-standardized-residuals-in-lm-model
+
+```{r}
+score_df = score_df %>%
+  rowwise() %>%
+  mutate(avg_studres = mean(c(studres_ascvd_10y_frs, studres_ascvd_10y_accaha, studres_chd_10y_mesa, studres_SCORE2)))
+
+reference_cutoff = 0.2
+
+lower_quantile_resilient = quantile(score_df$avg_studres[score_df$avg_studres < 0], probs =   reference_cutoff)
+upper_quantile_resilient = quantile(score_df$avg_studres[score_df$avg_studres < 0], probs =   1-reference_cutoff/2)
+lower_quantile_susceptible = quantile(score_df$avg_studres[score_df$avg_studres > 0], probs =   reference_cutoff/2)
+upper_quantile_susceptible = quantile(score_df$avg_studres[score_df$avg_studres > 0], probs =   1-reference_cutoff)
+
+cat(lower_quantile_resilient, ", ", upper_quantile_resilient, ", ", lower_quantile_susceptible, ", ", upper_quantile_susceptible, "\n")
+
+
+score_df = score_df %>%
+  mutate(
+    consensus_class = calculate_classes_2(avg_studres, 
+                                            lower_quantile_resilient, 
+                                            upper_quantile_resilient, 
+                                            lower_quantile_susceptible, 
+                                            upper_quantile_susceptible)
+  )
+
+score_df
+
+
+```
+```{r}
+long_score_df = score_df %>%
+  dplyr::select(-starts_with("studres")) %>%
+  pivot_longer(cols = c("ascvd_10y_frs", "ascvd_10y_accaha", "chd_10y_mesa", "SCORE2"), names_to = "score_type", values_to = "score") %>%
+  mutate(score_type = as.factor(score_type))
+
+
+# create a list of unique score types
+score_types = unique(long_score_df$score_type)
+
+# create a plot for each score type
+plots = lapply(score_types, function(score_type) {
+  # subset the data for the current score type
+  df_subset = long_score_df[long_score_df$score_type == score_type,]
+  print(df_subset)
+  # create the plot
+  #ggplot(df_subset, aes(x = score, y = cacs_pct)) +
+  ggplot(df_subset, aes(x=score, y=ln_cacs)) +
+    geom_point(aes(color = consensus_class)) +
+    geom_smooth(formula = y ~ x - 1, method = 'lm', se = FALSE) +
+    theme_bw() +
+    labs(title = paste("CACS vs", score_type),
+         x = "Score Value", y = "ln(CACS+1)")
+})
+
+# arrange the plots in a grid
+p = gridExtra::grid.arrange(grobs = plots, ncol = 2, nrow = 2)
+ggsave("~/Desktop/myplot.png", plot = p, width = 12, height = 8, dpi = 300)
+```
+
 ### Comparing Classes
 
 #### Metabolomics
 
+#### 
+
 #### Differential Expression Analysis
 
 ```{r}
-
 # Metabolomics
 # Picks the first assay rlmSampleAllShort_H_batch
 metab_exp = longFormat(bioheart_mae[,,'Metabolomics'],
@@ -3860,7 +3943,7 @@ metab_df = data.frame(metab_exp) %>%
   #mutate(across(8:60, ~(.-min(.))/((max(.)-min(.)))))
 
 graph_df = score_df %>%
-  select(ID, consensus_class) %>%
+  dplyr::select(ID, consensus_class) %>%
   inner_join(metab_df, by=c('ID'='primary')) # %>%
   #filter(consensus_class %in% c("resilient", "reference"))
 
@@ -3917,12 +4000,13 @@ fviz_pca_ind(metab_pca_limited,
              legend.title = "Groups")
 ```
 
+
 ```{r}
 filtered_graph_df = graph_df #%>%
   #filter(gender == 1) %>%
   #filter(age > 60) 
 lm_df = filtered_graph_df %>%
-  select(-c(ID, consensus_class, colname, gender, age, smurfs, cacs, cacs_pct, gensini)) %>%
+  dplyr::select(-c(ID, consensus_class, colname, gender, age, smurfs, cacs, cacs_pct, gensini)) %>%
   t()
 
 rownames(lm_df)
