@@ -89,7 +89,9 @@ toString(row.names(data.frame(assays(se_metab)$log2Raw)))
 
 ```{r}
 se_lipid_spec = bioheart_mae[['Lipidomics_species']]
-data.frame(assays(se_lipid_spec)$log2conc)
+df = data.frame(assays(se_lipid_spec)$log2conc)
+# export the data frame to a CSV file
+write.csv(df, "lipidomics-species.csv", row.names = TRUE)
 ```
 
 ```{r}
