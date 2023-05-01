@@ -1,0 +1,21 @@
+---
+title: "iAge Data Exploration"
+author: "Matthew Shu"
+date: "2022-10-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library("readxl")
+df = read_excel("iAge-CyTOF.xlsx")
+
+```
+
+```{r}
+df
+
+```
