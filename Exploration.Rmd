@@ -3922,8 +3922,9 @@ score_df = score_df %>%
                                             upper_quantile_susceptible)
   )
 
-score_df
 
+
+long_score_df$stud_class = long_score_df$consensus_class
 
 ```
 
@@ -3983,7 +3984,14 @@ score_df = score_df %>%
                                             upper_quantile_susceptible)
   )
 
-score_df
+
+
+long_score_df$harm_class = score_df$consensus_class
+long_score_df[!long_score_df$harm_class == long_score_df$stud_class,] %>%
+  #pivot_longer(cols = c(harm_class, stud_class), names_to = "class_type", values_to = "class") %>%
+  ggplot(aes(x = hm_score, y = ln_cacs, color = harm_class)) +
+  geom_point() +
+  theme_bw()
 
 
 ```
@@ -4033,6 +4041,13 @@ plots = lapply(score_types, function(score_type) {
 p = gridExtra::grid.arrange(grobs = plots, ncol = 2, nrow = 2)
 # ggsave("~/Desktop/myplot.png", plot = p, width = 12, height = 8, dpi = 300)
 ggsave("myplot.png", plot = p, width = 12, height = 8, dpi = 300)
+
+
+```
+
+```{r}
+
+long_score_df
 
 
 ```
@@ -4193,8 +4208,9 @@ filtered_graph_df = filtered_graph_df %>%
   mutate(cacs_bool  = case_when(
     cacs != 0 ~ "CACS_present",
     cacs == 0 ~ "CACS_absent"
-  ))
+  )) 
 
+relevel(filtered_graph_df$cacs_bool, "CACS_absent")
 
 unique(filtered_graph_df$cacs_bool)
 lm_df = filtered_graph_df %>%
