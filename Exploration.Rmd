@@ -3924,7 +3924,7 @@ score_df = score_df %>%
 
 
 
-long_score_df$stud_class = long_score_df$consensus_class
+score_df$stud_class = score_df$consensus_class
 
 ```
 
@@ -3986,12 +3986,8 @@ score_df = score_df %>%
 
 
 
-long_score_df$harm_class = score_df$consensus_class
-long_score_df[!long_score_df$harm_class == long_score_df$stud_class,] %>%
-  #pivot_longer(cols = c(harm_class, stud_class), names_to = "class_type", values_to = "class") %>%
-  ggplot(aes(x = hm_score, y = ln_cacs, color = harm_class)) +
-  geom_point() +
-  theme_bw()
+score_df$harm_class = score_df$consensus_class
+
 
 
 ```
@@ -4044,10 +4040,33 @@ ggsave("myplot.png", plot = p, width = 12, height = 8, dpi = 300)
 
 
 ```
+Looking at how different the harmonic mean classes are from the studentized residual classes.
 
 ```{r}
 
-long_score_df
+score_df[score_df$harm_class != score_df$stud_class,]
+
+# Create a new data frame with the count of each combination
+df_count = score_df %>%
+  filter(stud_class != harm_class)%>%
+  group_by(stud_class, harm_class) %>%
+  summarise(count = n())
+
+# Plot the data
+ggplot(df_count, aes(fill=stud_class, y=count, x=harm_class)) + 
+  geom_bar(position="stack", stat="identity") +
+  scale_fill_brewer(palette = "Set1") +
+  theme_minimal() +
+  labs(x = "Harmonic Mean Class", y = "Studentised Residuals Class", fill = "Student Class", 
+       title = "Class Switching between Score Aggregation Methods (n = 43)")
+
+
+score_df[!score_df$harm_class == score_df$stud_class,] %>%
+  #pivot_longer(cols = c(harm_class, stud_class), names_to = "class_type", values_to = "class") %>%
+  ggplot(aes(x = hm_score, y = ln_cacs, color = harm_class)) +
+  labs(x = "Harmonic Mean Score", y = "ln(CACS)", title = "Participants who switched class in Studentized Residuals (n = 43)", color = "Harmonic Mean Class") +
+  geom_point() +
+  theme_bw()
 
 
 ```
@@ -4163,8 +4182,8 @@ topTable(efit)
 
 
 # Contrasts
-#CM = makeContrasts(consensus_classresilient = consensus_classresilient - consensus_classreference, levels = design)
-CM = makeContrasts(consensus_classresilient = consensus_classsusceptible - consensus_classresilient, levels = design)
+CM = makeContrasts(consensus_classresilient = consensus_classresilient - consensus_classreference, levels = design)
+#CM = makeContrasts(consensus_classresilient = consensus_classsusceptible - consensus_classresilient, levels = design)
 #CM = makeContrasts(consensus_classresilient = consensus_classsusceptible - consensus_classreference, levels = design)
 constrast_fit = contrasts.fit(efit, contrast = CM)
 constrast_fit = eBayes(constrast_fit)
@@ -4205,12 +4224,11 @@ DMGV is positive when CACS_absent is the reference group which is what one would
 filtered_graph_df = graph_df
 filtered_graph_df$cacs_rank = rank(-graph_df$cacs, ties.method = "min")
 filtered_graph_df = filtered_graph_df %>%
-  mutate(cacs_bool  = case_when(
+  mutate(cacs_bool  = as.factor(case_when(
     cacs != 0 ~ "CACS_present",
     cacs == 0 ~ "CACS_absent"
-  )) 
-
-relevel(filtered_graph_df$cacs_bool, "CACS_absent")
+  )))
+relevel(filtered_graph_df$cacs_bool, "CACS_present")
 
 unique(filtered_graph_df$cacs_bool)
 lm_df = filtered_graph_df %>%
@@ -4232,7 +4250,7 @@ topTable(efit)
 library(Glimma)
 
 # Contrasts
-CM = makeContrasts(cacs_boolCACS_present, levels = design)
+CM = makeContrasts(cacs_boolCACS_absent, levels = design)
 constrast_fit = contrasts.fit(efit, contrast = CM)
 constrast_fit = eBayes(constrast_fit)
 
