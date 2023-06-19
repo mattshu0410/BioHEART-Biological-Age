@@ -81,6 +81,15 @@ toString(row.names(data.frame(assays(se_cytof)$CyTOF)))
 ```
 
 ```{r}
+
+prot_exp = longFormat(bioheart_mae[,,'Proteomics'],
+                 colDataCols = c("age", "smurfs", "cacs", "cacs_pct", "gensini"))
+
+toString(prot_exp$rowname)
+
+```
+
+```{r}
 se_metab = bioheart_mae[['Metabolomics']]
 data.frame(assays(se_metab)$log2Raw)
 assays(se_metab)
@@ -1028,6 +1037,7 @@ data.frame(
 ```
 
 ### Autoencoder
+
 ```{r}
 library(h2o)
 h2o.init()
@@ -1211,8 +1221,7 @@ bioheart_mae[['Lipidomics_species']]
 
 ### Elastic Regression Approach
 
-43 variables from 48 totals
-429 variables from 832 species
+43 variables from 48 totals 429 variables from 832 species
 
 ```{r}
 # Parallel Computing
@@ -2628,6 +2637,7 @@ library(h2o)
 h2o.init()
 
 ```
+
 ```{r}
 
 features = as.h2o(X_train)
@@ -2672,8 +2682,8 @@ paste(as.character(metrics[3,1])," (",as.character(metrics[3,2]),"-",as.characte
 
 
 ```
-### Grid Search Autoencoder
 
+### Grid Search Autoencoder
 
 ```{r}
 hyper_grid = list(hidden = list(
@@ -2703,14 +2713,12 @@ h2o.getGrid('autoencoder_grid', sort_by = 'mse', decreasing = FALSE)
 
 ```
 
-
 ### Graphs
 
 ```{r}
 cbind(metab_lipid_prot_merged_df,y, pred, age_accl, age_accl_adj)
 
 ```
-
 
 This paper here indicates what is resiliency and absence of CAC.
 
@@ -3134,23 +3142,7 @@ plot_summs(model, coefs=coefs, groups=groups,colors ="Qual1")
 
 ### FRS Score w/ Age Acceleration
 
-race (white, aa, chinese, or hispanic)
-age (years) *
-totchol (mg/dL) * <- ours is in mmol/L
-hdl (mg/dL) *
-sbp (mmHg) *
-bp_med (Y/N)
-* ace_i
-* bblocker
-* diuretic
-* ccb
-smoker (Y/N) *
-diabetes (Y/N) *
-bmi *
-lipid_med (Y/N)
-* statin
-fh_heartattack (Y/N)
-cac (Agatson) *
+race (white, aa, chinese, or hispanic) age (years) *totchol (mg/dL)* \<- ours is in mmol/L hdl (mg/dL) *sbp (mmHg)* bp_med (Y/N) \* ace_i \* bblocker \* diuretic \* ccb smoker (Y/N) *diabetes (Y/N)* bmi *lipid_med (Y/N)* statin fh_heartattack (Y/N) cac (Agatson) \*
 
 ```{r}
 dat_FRS
@@ -3221,31 +3213,11 @@ df %>%
 
 ```
 
-
 ## Ensemble Model of Resilience
-
 
 ### Calculate Scores
 
-race (white, aa, chinese, or hispanic)
-age (years) *
-totchol (mg/dL) * <- ours is in mmol/L
-hdl (mg/dL) *
-sbp (mmHg) *
-bp_med (Y/N)
-* ace_i
-* bblocker
-* diur_loop
-* diur_k
-* diur_unk
-* ccb
-smoker (Y/N) *
-diabetes (Y/N) *
-bmi *
-lipid_med (Y/N)
-* statin
-fh_heartattack (Y/N)
-cac (Agatson) *
+race (white, aa, chinese, or hispanic) age (years) *totchol (mg/dL)* \<- ours is in mmol/L hdl (mg/dL) *sbp (mmHg)* bp_med (Y/N) \* ace_i \* bblocker \* diur_loop \* diur_k \* diur_unk \* ccb smoker (Y/N) *diabetes (Y/N)* bmi *lipid_med (Y/N)* statin fh_heartattack (Y/N) cac (Agatson) \*
 
 #### SCORE2
 
@@ -3460,16 +3432,7 @@ calcFramingham91 <- function(df,
 
 #### All Score Calculations
 
-ethcat
-1 = European
-2 = Indigenous Australia
-3 = Polynesian
-4 = African
-5 = Asian
-6 = Indian
-7 = Middle Eastern
-8 = Hispanic
-9 = Other / Dual Ethnicity
+ethcat 1 = European 2 = Indigenous Australia 3 = Polynesian 4 = African 5 = Asian 6 = Indian 7 = Middle Eastern 8 = Hispanic 9 = Other / Dual Ethnicity
 
 ```{r}
 
@@ -3747,7 +3710,7 @@ score_df = score_df %>%
 
 ```
 
-``` {r}
+```{r}
 # Type 2 Classification - Absolute quantiles different for resilient and susceptible
 # Find the quantiles for susceptible and resilient based on only residuals either positive or negative
 calculate_classes_2 = function(residuals, lower_quantile_resilient, upper_quantile_resilient, lower_quantile_susceptible, upper_quantile_susceptible) {
@@ -3862,7 +3825,6 @@ ggsave("~/Desktop/myplot.png", plot = p, width = 12, height = 8, dpi = 300)
 
 ```
 
-
 ```{r}
 
 # Majority consensus between scores for grouping
@@ -3896,7 +3858,7 @@ table(score_df$consensus_class)
 
 Externally studentised residuals. Importantly we assume the normality assumptions of the original model is met.
 
-https://stats.stackexchange.com/questions/204708/is-studentized-residuals-v-s-standardized-residuals-in-lm-model
+<https://stats.stackexchange.com/questions/204708/is-studentized-residuals-v-s-standardized-residuals-in-lm-model>
 
 ```{r}
 score_df = score_df %>%
@@ -3925,7 +3887,7 @@ score_df = score_df %>%
 
 
 score_df$stud_class = score_df$consensus_class
-
+write.csv(score_df, "score_df.csv")
 ```
 
 ```{r}
@@ -4005,6 +3967,7 @@ score_df %>%
 
 
 ```
+
 Importantly the interpretation here is that the overlayed groups are the groups based on the harmonic mean. The plotted values are the residual values from the individual scores. We are seeing how different the groups are.
 
 ```{r}
@@ -4040,6 +4003,7 @@ ggsave("myplot.png", plot = p, width = 12, height = 8, dpi = 300)
 
 
 ```
+
 Looking at how different the harmonic mean classes are from the studentized residual classes.
 
 ```{r}
@@ -4073,8 +4037,9 @@ score_df[!score_df$harm_class == score_df$stud_class,] %>%
 
 ### Comparing Classes
 
+#### Metabolomics
 
-#### Differential Expression Analysis
+##### Differential Expression Analysis
 
 ```{r}
 # Metabolomics
@@ -4099,6 +4064,7 @@ graph_df = score_df %>%
   inner_join(metab_df, by=c('ID'='primary')) # %>%
   #filter(consensus_class %in% c("resilient", "reference"))
 
+# Graph Box Plot
 graph_df %>%
   pivot_longer(cols = -c(ID, gender, consensus_class, colname, age, smurfs, cacs, cacs_pct, gensini), names_to = "metabolite", values_to = "value") %>%
   ggplot() +
@@ -4108,9 +4074,6 @@ graph_df %>%
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
 
 ```
-
-
-
 
 ```{r}
 
@@ -4152,7 +4115,7 @@ fviz_pca_ind(metab_pca_limited,
              legend.title = "Groups")
 ```
 
-#### Resilient vs Reference
+##### Resilient vs Reference
 
 ```{r}
 filtered_graph_df = graph_df #%>%
@@ -4176,7 +4139,6 @@ topTable(efit)
 
 
 ```
-
 
 ```{r}
 
@@ -4283,6 +4245,7 @@ glMDPlot(constrast_fit,
 
 constrast_fit$p.value
 ```
+
 ##### Top-50 CAC vs no-CAC
 
 ```{r}
@@ -4410,6 +4373,8 @@ summary(model)
 levels(filtered_graph_df$consensus_class)
 ```
 
+#### Lipidomics
+
 ```{r}
 
 # Picks the first assay rlmSampleAllShort_H_batch
@@ -4435,8 +4400,11 @@ lipid_totals_df = data.frame(lipid_totals_exp) %>%
               names_from = rowname, values_from = value) %>%
   transform(cacs = as.numeric(cacs), cacs_pct = as.numeric(cacs_pct), gensini = as.numeric(gensini), primary = as.numeric(primary))
 
+graph_df = score_df %>%
+  select(ID, consensus_class) %>%
+  inner_join(lipid_totals_df, by=c('ID'='primary'))
 
-bioheart_mae[['Lipidomics_species']]
+
 
 
 
@@ -4465,6 +4433,39 @@ score_df %>%
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
 
 ```
+
+```{r}
+filtered_graph_df = graph_df #%>%
+  #filter(gender == 1) %>%
+  #filter(age > 60) 
+lm_df = filtered_graph_df %>%
+  dplyr::select(-c(ID, consensus_class, colname, age, smurfs, cacs, cacs_pct, gensini)) %>%
+  t()
+
+rownames(lm_df)
+dim(lm_df)
+dim(design)
+design = model.matrix(~ consensus_class, filtered_graph_df)
+fit = lmFit(lm_df, design)
+efit = eBayes(fit)
+topTable(efit)
+
+```
+
+```{r}
+
+# Contrasts
+CM = makeContrasts(consensus_classresilient = consensus_classresilient - consensus_classreference, levels = design)
+#CM = makeContrasts(consensus_classresilient = consensus_classsusceptible - consensus_classresilient, levels = design)
+#CM = makeContrasts(consensus_classresilient = consensus_classsusceptible - consensus_classreference, levels = design)
+constrast_fit = contrasts.fit(efit, contrast = CM)
+constrast_fit = eBayes(constrast_fit)
+
+topTable(constrast_fit)
+
+
+```
+
 #### Proteomics
 
 ```{r}
@@ -4524,15 +4525,12 @@ table(filtered_graph_df$consensus_class)
 
 ```
 
-
-
 ```{r}
 # Differential Expression
 # https://link.springer.com/article/10.1007/s11306-015-0823-6
 # control for age, gender (Emwas et al. 2014), diet (Heinzmann et al. 2010), physical activity
 
 ```
-
 
 ```{r}
 dat_FRS
@@ -4566,8 +4564,6 @@ test = lm(age ~ sbp, dat_FRS)
 predict(test, dat_FRS)
 
 ```
-
-
 
 ## Junk Code
 
