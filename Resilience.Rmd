@@ -1,0 +1,1279 @@
+---
+title: "Resilience Cohort in BioHEART"
+subtitle: "BioHEART"
+author: "Daniel Cheng, Matthew Shu"
+date: "`r Sys.Date()`"
+output:
+  prettydoc::html_pretty:
+    theme: cayman
+    highlight: github
+    toc: true
+toc-title: "Table of Contents"
+vignette: >
+  %\VignetteIndexEntry{Creating Pretty Documents from R Markdown - The Cayman Theme}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE, message=FALSE, error=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, results='hide', warning=FALSE, message=FALSE}
+library(tidyverse)
+library(dplyr)
+library(glmnet)
+library(caret)
+library(corrplot)
+library(naniar)
+library(factoextra)
+library(kableExtra)
+library(MultiAssayExperiment)
+library(boot)
+library(CVrisk)
+library(limma)
+library(plotly)
+library(Glimma)
+library(ggrepel)
+
+library(RiskScorescvd)
+```
+
+# Biological Age
+
+```{r, results='hide', warning=FALSE, message=FALSE}
+load("MultiAssayExperiment_20220816.RData")
+load("FRS_data.RData")
+```
+
+```{r}
+head(dat_FRS)
+```
+
+
+## Ensemble Model of Resilience
+
+### Calculate Scores
+
+Relevant Variables from BioHEART
+
+* `race` (white, aa, chinese, or hispanic) 
+* `age` (years) 
+* `totchol` (mg/dL) \<- ours is in mmol/L hdl (mg/dL) 
+* `sbp` (mmHg) 
+* `bp_med` (Y/N)
+* `ace_i`
+* `bblocker`
+* `diur_loop`
+* `diur_k`
+* `diur_unk`
+* `ccb smoker` (Y/N) 
+* `diabetes` (Y/N)
+* `bmi` 
+* `lipid_med` (Y/N)
+* `statin`
+* `fh_heartattack` (Y/N)
+* `cac` (Agatson)
+
+#### SCORE2
+
+* The methods for calculating the SCORE2 and relevant coefficients can be found in the supplementary material located at the following link.
+https://www.ncbi.nlm.nih.gov/pmc/articles/PMC8248998/
+* The SCORE2 risk score is specifically for people below 70 or below. There is a separate set of coefficients for people older than 70.
+* There are region and sex-specific recalibration scales; in this situation we have assumed Australia is a Low Risk Region.
+
+
+
+```{r}
+# sbp -> mmHg
+# tchol -> mmol/L
+# hdl -> mmol/L
+# gender -> 'male' or 'female'
+
+SCORE2_10yr= function(gender, age, curr_smok, sbp, dm, tchol, hdl) {
+  # Transformation of Variables (Supplementary Methods Table 2)
+  cage = (age-60)/5
+  csbp = (sbp-120)/20
+  ctchol = (tchol-6)/1
+  chdl = (hdl-1.3)/0.5
+  dm = as.numeric(dm)
+  curr_smok = as.numeric(dm)
+  
+  # Rescaling Factors based on Low Risk Region (Supplementary Methods Table 3)
+  male_RF = c(-0.5699, 0.7476)
+  female_RF = c(-0.7380, 0.7019)
+  
+  # Linear Predictor + Calibration (Supplementary Methods Table 1)
+  # Male
+  if (gender == 'male') {
+    beta_x = 0.3742*cage + 0.1458*ctchol - 0.2698*chdl + 0.2777*csbp + 
+    0.6457*dm + 0.6012*curr_smok - 0.0281*cage*ctchol + 0.0426*cage*chdl +
+    - 0.0255*cage*csbp - 0.0983*cage*dm - 0.0755*cage*curr_smok
+    
+    ten_yr_risk = 1-0.9605^(exp(beta_x))
+    
+    estimate = 1-exp(-exp(male_RF[1]+male_RF[2]*log(-log(1-ten_yr_risk))))
+    
+  # Female
+  } else if (gender == 'female'){
+    beta_x = 0.4648*cage + 0.1002*ctchol - 0.2606*chdl + 0.3131*csbp + 
+    0.8096*dm + 0.7744*curr_smok - 0.0226*cage*ctchol + 0.0613*cage*chdl +
+    - 0.0277*cage*csbp - 0.1272*cage*dm - 0.1088*cage*curr_smok
+    
+    ten_yr_risk = 1-0.9776^(exp(beta_x))
+    
+    estimate = 1-exp(-exp(female_RF[1]+female_RF[2]*log(-log(1-ten_yr_risk))))
+  }
+  
+  return(estimate*100)
+  
+  
+}
+
+```
+
+#### SCORE2-OP
+
+* The methods for calculating the SCORE2-OP and relevant coefficients can be found in the supplementary material located at the following link.
+https://www.ncbi.nlm.nih.gov/pmc/articles/PMC8248997/
+* The SCORE2-OP risk score is specifically for people above 70.
+* There are region and sex-specific recalibration scales; in this situation we have assumed Australia is a Low Risk Region.
+```{r}
+
+# ONLY FOR ABOVE 70 years old
+# Assumes a low-risk region
+# sbp -> mmHg
+# tchol -> mmol/L
+# hdl -> mmol/L
+# gender -> 'male' or 'female'
+
+SCORE2OP_10yr= function(gender, age, curr_smok, sbp, dm, tchol, hdl) {
+  # Transformation of Variables (Supplementary Methods Table 3)
+  cage = age-73
+  csbp = sbp-150
+  ctchol = tchol-6
+  chdl = hdl-1.4
+  dm = as.numeric(dm)
+  curr_smok = as.numeric(dm)
+  
+  # Rescaling Factors based on Low Risk Region (Supplementary Methods Table 1)
+  male_RF = c(-0.34, 1.19)
+  female_RF = c(-0.52, 1.01)
+  
+  # Linear Predictor + Calibration (Supplementary Methods Table 3)
+  # Male
+  if (gender == 'male') {
+    beta_x = 0.0634*cage + 0.0850*ctchol - 0.3564*chdl + 0.0094*csbp + 
+    0.4245*dm + 0.3524*curr_smok - 0.0073*cage*ctchol + 0.0091*cage*chdl +
+    - 0.0005*cage*csbp - 0.0174*cage*dm - 0.0247*cage*curr_smok
+    
+    ten_yr_risk = 1-0.7576^(exp(beta_x-0.0929))
+    
+    estimate = 1-exp(-exp(male_RF[1]+male_RF[2]*log(-log(1-ten_yr_risk))))
+    
+  # Female
+  } else if (gender == 'female'){
+    beta_x = 0.0789*cage + 0.0605*ctchol - 0.3040*chdl + 0.0102*csbp + 
+    0.6010*dm + 0.4921*curr_smok - 0.0009*cage*ctchol + 0.0154*cage*chdl +
+    - 0.0004*cage*csbp - 0.0107*cage*dm - 0.0255*cage*curr_smok
+    
+    
+    ten_yr_risk = 1-0.8082^(exp(beta_x-0.229))
+    
+    estimate = 1-exp(-exp(female_RF[1]+female_RF[2]*log(-log(1-ten_yr_risk))))
+  }
+  
+  return(estimate*100)
+  
+  
+}
+
+```
+
+
+#### All Score Calculations
+
+We have decided to calculate the following CVD Risk Scores for all BioHEART subjects. There are certain limitations of each score where important re-coding decisions were made on the BioHEART data. These limitations are denoted below.
+
+* FRS
+* ASCVD (Restricted)
+  + 20 < age < 79 
+  + 130 < totchol < 320
+  + 20 < hdl < 100
+  + 90 < sbp < 200
+  + White, African American, Other
+* MESA CHD (Limited Ethnicities)
+  + White, African American, Chinese, American
+* SCORE2
+
+BioHEART Ethnicity Coding (ethcat)
+
+* 1 = European 
+* 2 = Indigenous Australia 
+* 3 = Polynesian 
+* 4 = African 
+* 5 = Asian 
+* 6 = Indian 
+* 7 = Middle Eastern
+* 8 = Hispanic
+* 9 = Other / Dual Ethnicity
+
+Important Recoding Decisions
+* For ACCAHA, all other ethnicities were grouped under "Other". 
+* For MESA, Polynesians, Middle Eastern and any Other Ethnicities were classified as White.
+
+```{r}
+
+pheno_df = dat_FRS %>%
+  # remove where gender or cac or cacs_pct not recorded
+  drop_na(gender, cacs, cacs_pct) %>%
+  # missing value encoded as .
+  filter(cacs_pct != ".") %>%
+  # limits of ascvd limited between 30 and 74
+  filter((age<=79) & (age>=20)) %>%
+  mutate(
+    # refactor gender
+    gender = case_when(
+      gender==1 ~ 'male',
+      gender==2 ~ 'female'
+      ),
+    # convert from mmol/L to mg/dL
+    HDL_mgdl = HDL*38.67,
+    Chol_mgdl = Chol*38.67,
+    # new variable presence or absence of blood pressure meds
+    bp_med = case_when(
+      ace_arb == 1 ~ 1,
+      bblocker == 1 ~ 1,
+      diuretic == 1 ~ 1,
+      ccb == 1 ~ 1,
+      TRUE ~ 0
+    ),
+    # new variable presence or absence of lipid lowering meds
+    lipid_med = case_when(
+      statin == 1 ~ 1,
+      ezetimibe == 1 ~ 1,
+      fibrate == 1 ~ 1,
+      niacin == 1 ~ 1,
+      babr == 1 ~ 1,
+      plant_sterol == 1 ~ 1,
+      lipid_lowering_unknown == 1 ~ 1,
+      TRUE ~ 0
+    ),
+    # assume no history of IHD if NA
+    fh_ihd = case_when(
+      fh_ihd == 1 ~ 1,
+      fh_ihd == 0 ~ 0,
+      is.na(fh_ihd) ~ 0
+    ),
+    # CACS as number
+    cacs = as.numeric(cacs),
+    cacs_pct = as.numeric(cacs_pct),
+    # ACCAHA Ethnicity
+    accaha_eth = case_when(
+      ethcat == 1 ~ 'white',
+      ethcat == 4 ~ 'aa',
+      TRUE ~ 'other'
+    ),
+    # Unresolved: MESA only contains 4 ethnicity categories, what do we do with other?
+    mesa_eth = case_when(
+      ethcat == 1 ~ 'white',
+      ethcat == 2 ~ 'aa',
+      ethcat == 3 ~ 'white', # contentious Polynesian
+      ethcat == 4 ~ 'aa',
+      ethcat == 5 ~ 'chinese',
+      ethcat == 7 ~ 'white',
+      ethcat == 8 ~ 'hispanic',
+      ethcat == 9 ~ 'white', # contentious mixed/Other
+      TRUE ~ 'white' # if NA assume white
+    ),
+    
+  )
+
+pheno_df = pheno_df %>%
+  rowwise() %>%
+  mutate(
+    # FRS Score
+    ascvd_10y_frs = ascvd_10y_frs(gender, age, HDL_mgdl, Chol_mgdl, sbp, bp_med, curr_smok, cvhx_dm),
+    # ASCVD (Pooled Cohort Equations - USA) w/ Requirements
+    # 20 < age < 79 
+    # 130 < totchol < 320
+    # 20 < hdl < 100
+    # 90 < sbp < 200
+    ascvd_10y_accaha = ascvd_10y_accaha(accaha_eth, gender, age, Chol_mgdl, HDL_mgdl, sbp, bp_med, curr_smok, cvhx_dm),
+    # MESA CHD
+    chd_10y_mesa = chd_10y_mesa(mesa_eth, gender, age, Chol_mgdl, HDL_mgdl,lipid_med, sbp, bp_med, curr_smok, cvhx_dm, fh_ihd),
+    # MESA CHD w/ CAC
+    chd_10y_mesa_cac = chd_10y_mesa_cac(mesa_eth, gender, age, Chol_mgdl, HDL_mgdl,lipid_med, sbp, bp_med, curr_smok, cvhx_dm, fh_ihd, cacs),
+    # SCORE2 <= 70 year olds
+    SCORE2_10yr = SCORE2_10yr(gender, age, curr_smok, sbp, cvhx_dm, Chol, HDL),
+    # SCORE2-OP > 70 year olds
+    SCORE2OP_10yr= SCORE2OP_10yr(gender, age, curr_smok, sbp, cvhx_dm, Chol, HDL),
+    # New Package
+    # SCORE2 <= 70 year olds
+    SCORE2_new = SCORE2(age, gender, curr_smok, sbp, cvhx_dm, Chol, HDL, FALSE),
+    
+    ) %>%
+  mutate(
+    # Use the right SCORE2 based on age
+    SCORE2 = case_when(
+      age <= 70 ~ SCORE2_10yr,
+      age > 70 ~ SCORE2OP_10yr
+    )
+  )
+
+score_df = pheno_df %>%
+  dplyr::select(ID, cacs, cacs_pct, ascvd_10y_frs, ascvd_10y_accaha, chd_10y_mesa, SCORE2, SCORE2_new)
+# Picked MESA without CAC since CAC will be the y-axis when calculating residuals
+# 112 missing values out of range but no particular pattern in its distribution
+
+```
+
+After calculation of the risk scores, there appears to be some missing values. On further inspection of the ASCVD 10YR ACCAHA score calculator it appears that the total cholesterol value needs to be above 130 mg/dL for the score calculator to work (limited by the cohort that this risk score was trained on).
+
+* This represents 1.7% of the data 
+* There seems to be a good proportion of subjects who are missed because of low Total Cholesterol
+
+
+```{r, warning=FALSE}
+score_df %>%
+  mutate(
+    na = case_when(
+      is.na(ascvd_10y_accaha) ~ TRUE,
+      !is.na(ascvd_10y_accaha) ~ FALSE
+    )
+  ) %>%
+  #filter(na == TRUE) %>%
+  ggplot() +
+  aes(x = cacs_pct, y = ".") +
+  geom_boxplot() +
+  geom_jitter(aes(color = na, alpha = 0.2))
+
+
+pheno_df %>%
+  mutate(
+    na = case_when(
+      is.na(ascvd_10y_accaha) ~ TRUE,
+      !is.na(ascvd_10y_accaha) ~ FALSE
+    )
+  ) %>%
+  filter(na == TRUE) %>%
+  select(ID, gender, smurfs, ascvd_10y_frs, chd_10y_mesa, SCORE2, ethcat, cacs, cacs_pct) %>%
+  ggplot() + 
+  aes(x = ascvd_10y_frs, y = log(cacs+1)) +
+  geom_point() +
+  theme_bw()
+
+score_df %>%
+  vis_miss()
+
+score_df = score_df %>% drop_na()
+
+
+```
+
+### Calculate Residuals
+
+We calculated the studentised residuals which is also sometimes referred to as "externally studentised residuals" or "jack-knifed residuals". 
+
+Other methods that were attempted included
+* Diagonal residuals calculated perpendicular to the line of best fit for each score
+* Harmonic Mean of vertical residuals from each risk score
+
+#### Vertical Studentised Residuals
+
+https://stats.stackexchange.com/questions/204708/is-studentized-residuals-v-s-standardized-residuals-in-lm-model
+
+```{r}
+
+# Calculate vertical residuals of linear model regressing CACS %tile on score
+calculate_residuals = function(cacs_pct, score) {
+  lm = lm(cacs_pct ~ score - 1) # forcing through zero
+  return(residuals(lm))
+}
+
+# Calculate studentised vertial residuals of linear model regressing CACS %tile on score
+studentised_residuals = function(cacs_pct, score) {
+  lm = lm(cacs_pct ~ score - 1) # forcing through zero
+  return(rstudent(lm))
+}
+
+```
+
+```{r}
+
+score_df = score_df %>%
+  mutate(ln_cacs = log(cacs+1)) %>%
+  mutate(
+    res_ascvd_10y_frs = calculate_residuals(ln_cacs, ascvd_10y_frs),
+    res_ascvd_10y_accaha = calculate_residuals(ln_cacs, ascvd_10y_accaha),
+    res_chd_10y_mesa = calculate_residuals(ln_cacs, chd_10y_mesa),
+    res_SCORE2 = calculate_residuals(ln_cacs, SCORE2)
+  ) %>%
+  mutate(
+    studres_ascvd_10y_frs = studentised_residuals(ln_cacs, ascvd_10y_frs),
+    studres_ascvd_10y_accaha = studentised_residuals(ln_cacs, ascvd_10y_accaha),
+    studres_chd_10y_mesa = studentised_residuals(ln_cacs, chd_10y_mesa),
+    studres_SCORE2 = studentised_residuals(ln_cacs, SCORE2)
+  )
+
+# Showing how many subjects have residuals of non-uniform sign
+score_df %>%
+  mutate(s = res_ascvd_10y_frs * res_ascvd_10y_accaha * res_chd_10y_mesa * res_SCORE2) %>%
+  filter(s < 0)
+
+```
+
+### Classifying Residuals
+
+For each subject, the average studentised residual across all risk scores was used to classify the subject as either `resilient`, `susceptible`, `reference`, `ignore`.
+
+* A reference cut-off is set e.g. 0.2
+* The largest 20th percentile of negative residuals below the line of best fit (LOBF) is considered `resilient`
+* The largest 20th percentile of positive residuals above the LOBF is considered `susceptible`
+* The smallest 10th percentile of negative and positive residuals on either side of the LOBF is considered `reference`
+* The rest of the subjects are categorised as `ignore`
+
+#### Classification Functions 
+
+```{r}
+# Type 2 Classification - Absolute quantiles different for resilient and susceptible
+# Find the quantiles for susceptible and resilient based on only residuals either positive or negative
+calculate_classes_2 = function(residuals, lower_quantile_resilient, upper_quantile_resilient, lower_quantile_susceptible, upper_quantile_susceptible) {
+  
+  cohort_split = function(x) {
+      if ((x >= upper_quantile_resilient) & (x <= lower_quantile_susceptible)) {
+        return(as.factor("reference"))
+      } else if (x < lower_quantile_resilient) {
+        return(as.factor("resilient"))
+      } else if (x > upper_quantile_susceptible){
+        return(as.factor("susceptible"))
+      } else {
+        return(as.factor("ignore"))
+      }
+  }
+  return(sapply(residuals, FUN = cohort_split))
+  }
+
+```
+
+Externally studentised residuals. Importantly we assume the normality assumptions of the original model is met.
+
+<https://stats.stackexchange.com/questions/204708/is-studentized-residuals-v-s-standardized-residuals-in-lm-model>
+
+```{r}
+score_df = score_df %>%
+  rowwise() %>%
+  mutate(avg_studres = mean(c(studres_ascvd_10y_frs, studres_ascvd_10y_accaha, studres_chd_10y_mesa, studres_SCORE2)))
+
+reference_cutoff = 0.2
+
+lower_quantile_resilient = quantile(score_df$avg_studres[score_df$avg_studres < 0], probs =   reference_cutoff)
+upper_quantile_resilient = quantile(score_df$avg_studres[score_df$avg_studres < 0], probs =   1-reference_cutoff/2)
+lower_quantile_susceptible = quantile(score_df$avg_studres[score_df$avg_studres > 0], probs =   reference_cutoff/2)
+upper_quantile_susceptible = quantile(score_df$avg_studres[score_df$avg_studres > 0], probs =   1-reference_cutoff)
+
+#cat(lower_quantile_resilient, ", ", upper_quantile_resilient, ", ", lower_quantile_susceptible, ", ", upper_quantile_susceptible, "\n")
+
+
+score_df = score_df %>%
+  mutate(
+    consensus_class = calculate_classes_2(avg_studres, 
+                                            lower_quantile_resilient, 
+                                            upper_quantile_resilient, 
+                                            lower_quantile_susceptible, 
+                                            upper_quantile_susceptible)
+  )
+
+
+score_df$stud_class = score_df$consensus_class
+write.csv(score_df, "score_df.csv")
+```
+The following show the results of the groupings.
+
+```{r}
+table(score_df$consensus_class)
+```
+* The graph below shows the plots of `ln(CACS+1)` against the various risk scores. 
+* The colours represent the classifications made based on the average studentised residuals across all the risk scores.
+
+
+```{r}
+long_score_df = score_df %>%
+  dplyr::select(-starts_with("studres")) %>%
+  pivot_longer(cols = c("ascvd_10y_frs", "ascvd_10y_accaha", "chd_10y_mesa", "SCORE2"), names_to = "score_type", values_to = "score") %>%
+  mutate(score_type = as.factor(score_type))
+
+
+# create a list of unique score types
+score_types = unique(long_score_df$score_type)
+
+# create a plot for each score type
+plots = lapply(score_types, function(score_type) {
+  # subset the data for the current score type
+  df_subset = long_score_df[long_score_df$score_type == score_type,]
+  # create the plot
+  #ggplot(df_subset, aes(x = score, y = cacs_pct)) +
+  ggplot(df_subset, aes(x=score, y=ln_cacs)) +
+    geom_point(aes(color = consensus_class)) +
+    geom_smooth(formula = y ~ x - 1, method = 'lm', se = FALSE) +
+    theme_bw() +
+    labs(title = paste("CACS vs", score_type),
+         x = "Score Value", y = "ln(CACS+1)")
+})
+
+# arrange the plots in a grid
+p = gridExtra::grid.arrange(grobs = plots, ncol = 2, nrow = 2)
+# ggsave("~/Desktop/myplot.png", plot = p, width = 12, height = 8, dpi = 300)
+ggsave("myplot.png", plot = p, width = 12, height = 8, dpi = 300)
+```
+
+
+### Comparing Classes
+
+#### Metabolomics
+
+```{r, warning=FALSE}
+# Metabolomics
+# Picks the first assay rlmSampleAllShort_H_batch
+metab_exp = longFormat(bioheart_mae[,,'Metabolomics'],
+                 colDataCols = c("gender","age", "smurfs", "cacs", "cacs_pct", "gensini"),
+                 i = 3L)
+
+metab_df = data.frame(metab_exp) %>%
+  filter(primary != "Pool") %>%
+  pivot_wider(id_cols = c(primary, colname, gender, age, smurfs, cacs, cacs_pct, gensini), 
+              names_from = rowname, values_from = value) %>%
+  filter(if_all(everything(), ~ .!=".")) %>%
+  transform(cacs = as.numeric(cacs), cacs_pct = as.numeric(cacs_pct), gensini = as.numeric(gensini), primary = as.numeric(primary)) %>%
+  # Remove duplicate rows, .keep_all <- keeps all of the rest of columns
+  distinct(primary, .keep_all = TRUE) %>%
+  drop_na() #%>%
+  #mutate(across(8:60, ~(.-min(.))/((max(.)-min(.)))))
+
+graph_df = score_df %>%
+  dplyr::select(ID, consensus_class) %>%
+  inner_join(metab_df, by=c('ID'='primary')) # %>%
+  #filter(consensus_class %in% c("resilient", "reference"))
+
+# Graph Box Plot
+graph_df %>%
+  pivot_longer(cols = -c(ID, gender, consensus_class, colname, age, smurfs, cacs, cacs_pct, gensini), names_to = "metabolite", values_to = "value") %>%
+  ggplot() +
+  aes(x = metabolite, y = value, colour = consensus_class) +
+  geom_boxplot() +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+```
+
+```{r}
+
+
+# PCA Analysis
+metab_pca = graph_df %>%
+  select(-c(ID, consensus_class, colname, gender, age, smurfs, cacs, cacs_pct, gensini)) %>%
+  #scale() %>%
+  prcomp()
+
+fviz_eig(metab_pca, addlabels = TRUE)
+
+fviz_pca_ind(metab_pca,
+             geom.ind = "point",
+             col.ind = graph_df %>% select(consensus_class) %>% pull(),
+             palette = c("#00AFBB", "#E7B800", "#FC4E07", "#000000"),
+             addEllipses = TRUE,
+             legend.title = "Groups")
+
+metab_pca_limited = graph_df %>%
+  filter(gender == 1) %>%
+  filter(age > 60) %>%
+  select(-c(ID, consensus_class, colname, gender, age, smurfs, cacs, cacs_pct, gensini)) %>%
+  #scale() %>%
+  prcomp()
+
+
+fviz_pca_ind(metab_pca_limited,
+             geom.ind = "point",
+             col.ind = graph_df %>% filter(gender == 1) %>% filter(age > 60) %>% select(consensus_class) %>% pull(),
+             palette = c("#00AFBB", "#E7B800", "#FC4E07", "#000000"),
+             addEllipses = TRUE,
+             legend.title = "Groups")
+
+fviz_pca_ind(metab_pca_limited,
+             geom.ind = "point",
+             col.ind = graph_df %>% filter(gender == 1) %>% filter(age > 60) %>% select(cacs_pct) %>% pull(),
+             gradient.cols = c("green", "red"),
+             legend.title = "Groups")
+```
+##### Differential Expression Analysis
+
+The contrasts are `resilient` - `reference`.
+
+```{r, warning=FALSE}
+filtered_graph_df = graph_df #%>%
+  #filter(gender == 1) %>%
+  #filter(age > 60) 
+lm_df = filtered_graph_df %>%
+  dplyr::select(-c(ID, consensus_class, colname, gender, age, smurfs, cacs, cacs_pct, gensini)) %>%
+  t()
+
+design = model.matrix(~ consensus_class, filtered_graph_df)
+fit = lmFit(lm_df, design)
+efit = eBayes(fit)
+topTable(efit)
+
+# Contrasts
+CM = makeContrasts(consensus_classresilient = consensus_classresilient - consensus_classreference, levels = design)
+#CM = makeContrasts(consensus_classresilient = consensus_classsusceptible - consensus_classresilient, levels = design)
+#CM = makeContrasts(consensus_classresilient = consensus_classsusceptible - consensus_classreference, levels = design)
+constrast_fit = contrasts.fit(efit, contrast = CM)
+constrast_fit = eBayes(constrast_fit)
+
+topTable(constrast_fit)
+```
+
+```{r, warning=FALSE}
+# Volcano Plot
+library(EnhancedVolcano)
+p = EnhancedVolcano(
+  constrast_fit,
+  lab = rownames(constrast_fit),
+  x = "coefficients",
+  y = "p.value",
+  title = "Resilient vs Reference (un-adjusted p-values)",
+  pCutoff = 0.05,
+  labSize = 6
+)
+
+ggsave("resilient_reference_volcano.png", plot = p, width = 12, height = 8, dpi = 300)
+
+# MA Plot
+glMDPlot(constrast_fit,
+         counts = lm_df,
+         coef=1, 
+         main= "Resilient v.s. Reference",
+         groups = filtered_graph_df$consensus_class,
+         html="resilient_reference_ma_plot.html")
+
+```
+
+
+##### Top-50 CAC vs no-CAC
+
+No we compare the patients with the highest CAC (n=50) to those with no CAC to see if the results earlier are simply a product of patients having very high CAC.
+
+The contrasts are `high_cac` - `no_cac`.
+
+```{r, warning=FALSE}
+filtered_graph_df = graph_df
+filtered_graph_df$cacs_rank = rank(-graph_df$cacs, ties.method = "min")
+filtered_graph_df = filtered_graph_df %>%
+  mutate(cacs_bool = factor(case_when(
+    cacs_rank <= 50 ~ "high_cac",
+    cacs_pct == 0 ~ "no_cac",
+    TRUE ~ "ignore")
+  ))
+
+filtered_graph_df$cacs_bool = relevel(filtered_graph_df$cacs_bool, "no_cac")
+
+unique(filtered_graph_df$cacs_bool)
+lm_df = filtered_graph_df %>%
+  dplyr::select(-c(ID, consensus_class, colname, gender, age, smurfs, cacs, cacs_pct, gensini, cacs_bool, cacs_rank)) %>%
+  t()
+
+table(filtered_graph_df$cacs_bool)
+
+
+design = model.matrix(~ cacs_bool, filtered_graph_df)
+fit = lmFit(lm_df, design)
+efit = eBayes(fit)
+topTable(efit)
+
+
+library(Glimma)
+
+# Contrasts
+CM = makeContrasts(cacs_boolhigh_cac, levels = design)
+constrast_fit = contrasts.fit(efit, contrast = CM)
+constrast_fit = eBayes(constrast_fit)
+
+topTable(constrast_fit)
+
+# Volcano Plot
+#library(EnhancedVolcano)
+#p = EnhancedVolcano(
+#  constrast_fit,
+#  lab = rownames(constrast_fit),
+#  x = "coefficients",
+#  y = "p.value",
+#  title = "Top 50 CACS vs Zero CACs (un-adjusted p-values)",
+#  pCutoff = 0.05,
+#  labSize = 6
+#)
+#
+#
+#ggsave("cac_no_cac_volcano.png", plot = p, width = 12, height = 8, dpi = 300)
+#
+## MA Plot
+#glMDPlot(constrast_fit,
+#         counts = lm_df,
+#         coef=1, 
+#         main= "High CACS (Top 50) v.s. Zero CACS",
+#         groups = filtered_graph_df$cacs_bool,
+#         html="high_cacs_top_50_zero_cacs_ma_plot.html")
+#
+#
+#
+#constrast_fit$p.value
+```
+
+#### Lipidomics
+
+Lipid Species.
+
+```{r, warning=FALSE}
+
+# Picks the first assay rlmSampleAllShort_H_batch
+lipid_species_exp = longFormat(bioheart_mae[,,'Lipidomics_species'],
+                 colDataCols = c("age", "smurfs", "cacs", "cacs_pct", "gensini"),
+                 i = 2L)
+
+lipid_species_df = data.frame(lipid_species_exp) %>%
+  filter(primary != "Pool") %>%
+  pivot_wider(id_cols = c(primary, colname, age, smurfs, cacs, cacs_pct, gensini), 
+              names_from = rowname, values_from = value) %>%
+  transform(cacs = as.numeric(cacs), cacs_pct = as.numeric(cacs_pct), gensini = as.numeric(gensini), primary = as.numeric(primary))
+
+graph_df = score_df %>%
+  select(ID, consensus_class) %>%
+  inner_join(lipid_species_df, by=c('ID'='primary'))
+
+#score_df %>%
+#  select(ID, consensus_class) %>%
+#  inner_join(lipid_species_df, by=c('ID'='primary')) %>%
+#  filter(consensus_class %in% c("resilient", "reference")) %>%
+#  pivot_longer(cols = -c(ID, consensus_class, colname, age, smurfs, cacs, cacs_pct, gensini), names_to = "lipid_species", values_to = #"value") %>%
+#  ggplot() +
+#  aes(x = lipid_species, y = value, colour = consensus_class) +
+#  geom_boxplot() +
+#  theme_bw() +
+#  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+```
+
+Lipid Totals.
+
+```{r, warning=FALSE}
+lipid_totals_exp = longFormat(bioheart_mae[,,'Lipidomics_totals'],
+                 colDataCols = c("age", "smurfs", "cacs", "cacs_pct", "gensini"),
+                 i = 2L)
+
+lipid_totals_df = data.frame(lipid_totals_exp) %>%
+  filter(primary != "Pool") %>%
+  pivot_wider(id_cols = c(primary, colname, age, smurfs, cacs, cacs_pct, gensini), 
+              names_from = rowname, values_from = value) %>%
+  transform(cacs = as.numeric(cacs), cacs_pct = as.numeric(cacs_pct), gensini = as.numeric(gensini), primary = as.numeric(primary))
+
+graph_df = score_df %>%
+  select(ID, consensus_class) %>%
+  inner_join(lipid_totals_df, by=c('ID'='primary'))
+
+score_df %>%
+  select(ID, consensus_class) %>%
+  inner_join(lipid_totals_df, by=c('ID'='primary')) %>%
+  filter(consensus_class %in% c("resilient", "reference")) %>%
+  pivot_longer(cols = -c(ID, consensus_class, colname, age, smurfs, cacs, cacs_pct, gensini), names_to = "lipid_total", values_to = "value") %>%
+  ggplot() +
+  aes(x = lipid_total, y = value, colour = consensus_class) +
+  geom_boxplot() +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+```
+##### Differential Expression Analysis
+
+```{r, warning=FALSE}
+filtered_graph_df = graph_df #%>%
+  #filter(gender == 1) %>%
+  #filter(age > 60) 
+lm_df = filtered_graph_df %>%
+  dplyr::select(-c(ID, consensus_class, colname, age, smurfs, cacs, cacs_pct, gensini)) %>%
+  t()
+
+design = model.matrix(~ consensus_class, filtered_graph_df)
+fit = lmFit(lm_df, design)
+efit = eBayes(fit)
+topTable(efit)
+
+```
+
+The contrasts are `resilient` - `reference`.
+
+```{r, warning=FALSE}
+
+# Contrasts
+CM = makeContrasts(consensus_classresilient = consensus_classresilient - consensus_classreference, levels = design)
+#CM = makeContrasts(consensus_classresilient = consensus_classsusceptible - consensus_classresilient, levels = design)
+#CM = makeContrasts(consensus_classresilient = consensus_classsusceptible - consensus_classreference, levels = design)
+constrast_fit = contrasts.fit(efit, contrast = CM)
+constrast_fit = eBayes(constrast_fit)
+
+topTable(constrast_fit, n=50)
+
+```
+
+Here we dive deeper into some specific lipid groups. However, we've been told at this point that the elevation of Ceramides / Triglycerides is unlikely to be a marker of resilience and more likely to be a product of large risk score patients selected.
+
+```{r, warning=FALSE}
+
+score_df %>%
+  select(ID, consensus_class) %>%
+  inner_join(lipid_totals_df %>%
+               select(primary, colname, age, smurfs, cacs, cacs_pct, gensini, `Cer.m.`, `TG.SIM.`,`TG..NL.`)
+             , by=c('ID'='primary')) %>%
+  #filter(consensus_class %in% c("resilient", "reference")) %>%
+  pivot_longer(cols = -c(ID, consensus_class, colname, age, smurfs, cacs, cacs_pct, gensini), names_to = "lipid_total", values_to = "value") %>%
+  ggplot() +
+  aes(x = lipid_total, y = value, colour = consensus_class) +
+  geom_boxplot(notch=TRUE) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+
+```
+
+#### Proteomics
+
+```{r, warning=FALSE}
+
+prot_exp = longFormat(bioheart_mae[,,'Proteomics'],
+                 colDataCols = c("age", "smurfs", "cacs", "cacs_pct", "gensini"))
+
+
+prot_df = data.frame(prot_exp) %>%
+  filter(!grepl("Repeat", colname)) %>%
+  filter(primary != "79") %>%
+  filter(primary != "Pool") %>%
+  filter(primary != "Pool") %>%
+  pivot_wider(id_cols = c(primary, age, smurfs, cacs, cacs_pct, gensini), 
+              names_from = rowname, values_from = value) %>%
+  transform(cacs = as.numeric(cacs), cacs_pct = as.numeric(cacs_pct), gensini = as.numeric(gensini), primary = as.numeric(primary))
+
+#score_df %>%
+#  select(ID, consensus_class) %>%
+#  inner_join(prot_df, by=c('ID'='primary')) %>%
+#  filter(consensus_class %in% c("resilient", "reference")) %>%
+#  pivot_longer(cols = -c(ID, consensus_class, age, smurfs, cacs, cacs_pct, gensini), names_to = "proteins", values_to = "value") %>%
+#  ggplot() +
+#  aes(x = proteins, y = value, colour = consensus_class) +
+#  geom_boxplot() +
+#  theme_bw() +
+#  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+```
+
+##### Differential Expression Analysis
+
+```{r, warning=FALSE}
+
+prot_patient_df = score_df %>%
+  select(ID, consensus_class) %>%
+  inner_join(prot_df, by=c('ID'='primary'))
+
+
+lm_df = prot_patient_df %>%
+  select(-c(ID, consensus_class, age, smurfs, cacs, cacs_pct, gensini)) %>%
+  t()
+
+design = model.matrix(~ consensus_class, prot_patient_df)
+
+
+fit = lmFit(lm_df, design)
+fit = eBayes(fit)
+topTable(fit)
+
+CM = makeContrasts(consensus_classresilient = consensus_classresilient - consensus_classsusceptible, levels = design)
+constrast_fit = contrasts.fit(fit, contrast = CM)
+constrast_fit = eBayes(constrast_fit)
+topTable(constrast_fit)
+
+
+```
+
+#### CyTOF
+
+```{r, warning=FALSE}
+# Picks the first assay rlmSampleAllShort_H_batch
+exp = longFormat(bioheart_mae[,,'CyTOF'],
+                 colDataCols = c("age", "smurfs", "cacs", "cacs_pct", "gensini"),
+                 i = 1L)
+
+
+cytof_df = data.frame(exp) %>%
+  filter(primary != "Pool") %>%
+  mutate(primary = as.double(primary)) %>%
+  pivot_wider(id_cols = c(primary, colname, age, smurfs, cacs, cacs_pct, gensini), names_from = rowname, values_from = value) %>%
+  transform(cacs = as.numeric(cacs), cacs_pct = as.numeric(cacs_pct), gensini = as.numeric(gensini)) %>%
+  drop_na
+
+cytof_patient_df = score_df %>%
+  select(ID, consensus_class) %>%
+  inner_join(cytof_df, by=c('ID'='primary'))
+
+bioheart_mae[['CyTOF']]
+
+```
+
+#### Targeted Analysis
+
+The following metabolites, proteins, cell counts etc. were selected based on literature and were related to resilience in some way. We performed targeted analysis on these variables by selecting them alone from separate individual datasets.
+
+*dat_FRS*
+* `CRP`
+* `LP(a)`
+* `LDL-C`
+
+*Proteomics*
+* `SERPINA3`
+* `APOB` <- better LDL measurement
+* `FN1`
+____
+* `C7`
+* `LBP`
+* `SERPINF2`
+
+*Lipidomics Species*
+* `Cer.d18.1.24.1.` / `Cer.d18.1.24.0.`
+* `Cer.d18.1.16.0.` / `PC.16.0_22.6.`
+* `PC.16.0_16.0.`
+* `Cer.d18.1.16.0.`
+* `Cer.d18.1.18.0.`
+* `Cer.d18.1.24.0.`
+* `Cer.d18.1.24.1.`
+
+*CyTOF*
+* `Treg %CD4`
+* `Treg %total`
+* `14+ monos %myeloids`
+* `16+ monos %myeloids`
+
+##### Proteomics
+
+```{r, warning=FALSE}
+
+single_prot_df = prot_df %>%
+  select(c(primary, age, smurfs, cacs, cacs_pct, gensini, FN1))
+
+prot_patient_df = score_df %>%
+  select(ID, consensus_class) %>%
+  inner_join(single_prot_df, by=c('ID'='primary'))
+
+
+prot_patient_df %>%
+  ggplot(aes(x = consensus_class, y = FN1)) +
+  geom_boxplot(notch=TRUE) +
+  theme_bw()
+
+
+lm_df = prot_patient_df %>%
+  select(-c(ID, consensus_class, age, smurfs, cacs, cacs_pct, gensini)) %>%
+  t()
+
+design = model.matrix(~ consensus_class, prot_patient_df)
+
+
+fit = lmFit(lm_df, design)
+fit = eBayes(fit)
+topTable(fit)
+
+CM = makeContrasts(consensus_classresilient = consensus_classresilient - consensus_classreference, levels = design)
+constrast_fit = contrasts.fit(fit, contrast = CM)
+constrast_fit = eBayes(constrast_fit)
+topTable(constrast_fit)
+
+
+```
+##### Lipidomics
+
+```{r, warning=FALSE}
+
+species_interest = c("Cer.d18.1.24.1./Cer.d18.1.24.0.", "Cer.d18.1.16.0./PC.16.0_22.6.", 'PC.16.0_16.0.', 'Cer.d18.1.16.0.', 'Cer.d18.1.18.0.', 'Cer.d18.1.24.0.', 'Cer.d18.1.24.1.')
+
+graph_df = score_df %>%
+  select(ID, consensus_class) %>%
+  inner_join(lipid_species_df, by=c('ID'='primary'))
+
+graph_df = graph_df %>%
+  mutate(
+    "Cer.d18.1.24.1./Cer.d18.1.24.0." = `Cer.d18.1.24.1.`/`Cer.d18.1.24.0.`,
+    "Cer.d18.1.16.0./PC.16.0_22.6." = `Cer.d18.1.16.0.` / `PC.16.0_22.6.`
+  )
+
+filtered_graph_df = graph_df %>%
+  select(c(ID, consensus_class, colname, age, smurfs, cacs, cacs_pct, gensini, all_of(species_interest)))
+
+# Boxplot by species of interest
+p = filtered_graph_df %>%
+  select(c("consensus_class", species_interest)) %>%
+  tidyr::pivot_longer(cols = species_interest, names_to = "species", values_to = "value") %>%
+  ggplot(aes(x = consensus_class, y = value, fill = consensus_class)) +
+  geom_boxplot(notch = TRUE) +
+  facet_wrap(~ species, scales = "free_y") +
+  labs(x = "Consensus Class", y = "Value") +
+  theme_bw()
+p
+ggsave("boxplot.png", plot = p, width = 12, height = 8, dpi = 300)
+
+
+lm_df = filtered_graph_df %>%
+  dplyr::select(-c(ID, consensus_class, colname, age, smurfs, cacs, cacs_pct, gensini)) %>%
+  t()
+
+design = model.matrix(~ consensus_class, filtered_graph_df)
+fit = lmFit(lm_df, design)
+efit = eBayes(fit)
+topTable(efit)
+
+# Contrasts
+CM = makeContrasts(consensus_classresilient = consensus_classresilient - consensus_classreference, levels = design)
+#CM = makeContrasts(consensus_classresilient = consensus_classsusceptible - consensus_classresilient, levels = design)
+#CM = makeContrasts(consensus_classresilient = consensus_classsusceptible - consensus_classreference, levels = design)
+constrast_fit = contrasts.fit(efit, contrast = CM)
+constrast_fit = eBayes(constrast_fit)
+
+topTable(constrast_fit)
+```
+
+##### CyTOF
+
+You can see here that the class sizes are far too small to draw any reasonable conclusion.
+
+```{r, warning=FALSE}
+species_interest = c("Treg..CD4", "Treg..total", "X14..monos..myeloids", "X16..monos..myeloids")
+
+filtered_graph_df = cytof_patient_df %>%
+  select(c(ID, consensus_class, colname, age, smurfs, cacs, cacs_pct, gensini, all_of(species_interest)))
+
+# Boxplot by species of interest
+p = filtered_graph_df %>%
+  select(c("consensus_class", species_interest)) %>%
+  tidyr::pivot_longer(cols = species_interest, names_to = "species", values_to = "value") %>%
+  ggplot(aes(x = consensus_class, y = value, fill = consensus_class)) +
+  geom_boxplot(notch = TRUE) +
+  facet_wrap(~ species, scales = "free_y") +
+  labs(x = "Consensus Class", y = "Value") +
+  theme_bw()
+p
+ggsave("boxplot.png", plot = p, width = 12, height = 8, dpi = 300)
+
+table(filtered_graph_df$consensus_class)
+
+lm_df = filtered_graph_df %>%
+  dplyr::select(-c(ID, consensus_class, colname, age, smurfs, cacs, cacs_pct, gensini)) %>%
+  t()
+
+design = model.matrix(~ consensus_class, filtered_graph_df)
+fit = lmFit(lm_df, design)
+efit = eBayes(fit)
+topTable(efit)
+
+# Contrasts
+CM = makeContrasts(consensus_classresilient = consensus_classresilient - consensus_classreference, levels = design)
+#CM = makeContrasts(consensus_classresilient = consensus_classsusceptible - consensus_classresilient, levels = design)
+#CM = makeContrasts(consensus_classresilient = consensus_classsusceptible - consensus_classreference, levels = design)
+constrast_fit = contrasts.fit(efit, contrast = CM)
+constrast_fit = eBayes(constrast_fit)
+
+topTable(constrast_fit)
+```
+
+##### dat-FRS
+
+Averages where there are multiple measurements in the case of CRP and LP(a)
+
+```{r, warning=FALSE}
+
+
+species_interest = c("CRP","LP(a)")
+
+dat_FRS_patient_df = score_df %>%
+  select(ID, consensus_class) %>%
+  inner_join(dat_FRS, by=c('ID'='ID'))
+
+
+# Function to compute average from a character string of numbers
+compute_average <- function(x) {
+    # Split string into individual numbers, convert to numeric, and compute average
+    mean(as.numeric(unlist(strsplit(x, split = ",\\s*"))), na.rm = TRUE)
+}
+
+# Pick species of interest and if there are multiple measurements to average
+filtered_graph_df = dat_FRS_patient_df %>%
+  select(c(ID, consensus_class, all_of(species_interest))) %>%
+  drop_na() %>%
+  mutate(
+        CRP = sapply(CRP, compute_average),
+        `LP(a)` = sapply(`LP(a)`, compute_average)
+    )
+
+# Boxplot by species of interest
+p = filtered_graph_df %>%
+  select(c("consensus_class", species_interest)) %>%
+  tidyr::pivot_longer(cols = species_interest, names_to = "species", values_to = "value") %>%
+  ggplot(aes(x = consensus_class, y = value, fill = consensus_class)) +
+  geom_boxplot(notch = TRUE) +
+  facet_wrap(~ species, scales = "free_y") +
+  labs(x = "Consensus Class", y = "Value") +
+  theme_bw()
+p
+ggsave("boxplot.png", plot = p, width = 12, height = 8, dpi = 300)
+
+table(filtered_graph_df$consensus_class)
+
+lm_df = filtered_graph_df %>%
+  dplyr::select(-c(ID, consensus_class)) %>%
+  t()
+
+design = model.matrix(~ consensus_class, filtered_graph_df)
+fit = lmFit(lm_df, design)
+efit = eBayes(fit)
+topTable(efit)
+
+# Contrasts
+#CM = makeContrasts(consensus_classresilient = consensus_classresilient - consensus_classreference, levels = design)
+CM = makeContrasts(consensus_classresilient = consensus_classsusceptible - consensus_classresilient, levels = design)
+#CM = makeContrasts(consensus_classresilient = consensus_classsusceptible - consensus_classreference, levels = design)
+constrast_fit = contrasts.fit(efit, contrast = CM)
+constrast_fit = eBayes(constrast_fit)
+
+topTable(constrast_fit)
+```
+
+#### SNPs
+
+```{r}
+# Load the biomaRt library
+library(biomaRt)
+
+rsids = scan("rsIDs.txt", what = "character")
+
+# Select the human SNP mart
+snpMart = useMart(biomart = "ENSEMBL_MART_SNP", dataset = "hsapiens_snp")
+
+# List of rsIDs
+#rsids = c("rs11207977", "rs186021206", "rs145297799", "rs3135506", "rs115849089", "rs1122608", "rs111245230", "rs11591147", "rs12916")  # replace with your actual rsIDs
+
+# Get chromosome and position
+results = getBM(attributes = c("refsnp_id", "chr_name", "chrom_start"), 
+                 filters = "snp_filter", 
+                 values = rsids, 
+                 mart = snpMart)
+
+# Add a column for the end position, which is the same as the start position for SNPs
+results$chrom_end = results$chrom_start
+# Assuming df is your existing dataframe
+results$label = paste0("R", 1:nrow(results))
+
+
+
+# Write the results to a text file
+write.table(results[, c("chr_name", "chrom_start", "chrom_end", "label")], 
+            file = "myranges.txt", 
+            sep = "\t", 
+            quote = FALSE, 
+            row.names = FALSE, 
+            col.names = FALSE)
+
+
+```
+
+
+```{r}
+genotypes = read.csv("genotypes.raw", sep='')
+
+snps_info = read.table("extracted_snps.bim")
+
+snp_labels = results %>%
+  filter(chrom_start %in% snps_info$V4) %>%
+  pull(refsnp_id)
+
+
+genotype_columns = grep("^\\._", names(genotypes), value = TRUE)
+names(genotypes)[match(genotype_columns, names(genotypes))] = snp_labels
+
+snp_score_df = score_df %>%
+  inner_join(genotypes, by=c('ID'='IID')) %>%
+  select_if(~ !anyNA(.))
+```
+
+```{r}
+
+vis_miss(genotypes)
+
+```
+
+```{r}
+
+rs_columns = grep("^rs", names(snp_score_df), value = TRUE)
+
+rs_columns
+
+# Resilient versus Reference
+analyze_columns = function(df, rs_columns) {
+  # Filter rows where consensus_class is either "resilience" or "reference"
+  df <- df %>% filter(consensus_class %in% c("resilient", "reference"))
+  # Drop unused levels
+  df$consensus_class <- droplevels(df$consensus_class, except = c("resilient", "reference"))
+  
+  results = list()
+  for (col in rs_columns) {
+    # Create a contingency table
+    contingency_table = table(df[[col]], df$consensus_class)
+    print(contingency_table)
+    # Apply Fisher's exact test
+    fisher_test = fisher.test(contingency_table, workspace = 2e6)
+    
+    # Store the results
+    results[[col]] = list(
+      summary = contingency_table,
+      fisher_test = fisher_test
+    )
+  }
+  
+  return(results)
+}
+
+# Resilient versus Everything
+analyze_columns = function(df, rs_columns) {
+  # Filter rows where consensus_class is "reference", "resilient", "ignore", or "susceptible"
+  df <- df %>% filter(consensus_class %in% c("resilient", "reference", "ignore", "susceptible"))
+  
+  # Recode the "resilient", "ignore", and "susceptible" levels to "other"
+  df$consensus_class <- recode(df$consensus_class, "reference" = "other", "ignore" = "other", "susceptible" = "other")
+
+  # Drop unused levels
+  df$consensus_class <- droplevels(df$consensus_class)
+
+  results = list()
+  for (col in rs_columns) {
+    # Create a contingency table
+    contingency_table = table(df[[col]], df$consensus_class)
+    print(contingency_table)
+    # Apply Fisher's exact test
+    fisher_test = fisher.test(contingency_table, workspace = 2e6)
+    
+    # Store the results
+    results[[col]] = list(
+      summary = contingency_table,
+      fisher_test = fisher_test
+    )
+  }
+  
+  return(results)
+}
+
+results = analyze_columns(snp_score_df, rs_columns)
+results
+
+```
+

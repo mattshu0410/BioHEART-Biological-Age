@@ -3549,6 +3549,17 @@ score_df %>%
   geom_jitter(aes(color = na, alpha = 0.2))
 
 
+pheno_df %>%
+  mutate(
+    na = case_when(
+      is.na(ascvd_10y_accaha) ~ TRUE,
+      !is.na(ascvd_10y_accaha) ~ FALSE
+    )
+  ) %>%
+  filter(na == TRUE)
+
+pheno_df %>% colnames()
+
 score_df %>%
   vis_miss()
 
@@ -3636,6 +3647,7 @@ harmonic_mean = function(...){
   return(harmonic_mean)
 }
 
+score_df$ln_cacs = log(score_df$cacs+1)
 
 score_df = score_df %>%
   rowwise() %>%
@@ -3659,55 +3671,56 @@ score_df$res_hm_score = calculate_residuals(score_df$ln_cacs, score_df$hm_score)
 # Residuals more negative than the quantile are resilient
 # Residuals more positive than the quantile are considered susceptible
 # top_vs_bottom_quantile = TRUE sets groups to be top 10% percentile vs bottom 10% percentile
-calculate_classes = function(residuals, reference_cutoff = 0.2, top_vs_bottom_quantile = FALSE) {
-  lower_quantile = quantile(abs(residuals), probs = reference_cutoff)
-  upper_quantile = quantile(abs(residuals), probs = 1-reference_cutoff)
-  if (top_vs_bottom_quantile == FALSE) {
-    cohort_split = function(x) {
-      if (abs(x) <= lower_quantile) {
-        return(as.factor("reference"))
-      } else if (x < -lower_quantile) {
-        return(as.factor("resilient"))
-      } else {
-        return(as.factor("susceptible"))
-      }
-    }
-  } else {
-    cohort_split = function(x) {
-      if (abs(x) <= lower_quantile){
-        return(as.factor("reference"))
-      } else if (x < -upper_quantile) {
-        return(as.factor("resilient"))
-      } else if (x > upper_quantile) {
-        return(as.factor("susceptible"))
-      } else {
-        return(as.factor("ignore"))
-      }
-    }
-  return(sapply(residuals, FUN = cohort_split))
-}
 
-reference_cutoff = 0.2
-lower_quantile_frs = quantile(abs(score_df$res_ascvd_10y_frs), probs = reference_cutoff)
-upper_quantile_frs = quantile(abs(score_df$res_ascvd_10y_frs), probs = 1-reference_cutoff)
-
-lower_quantile_accaha = quantile(abs(score_df$res_ascvd_10y_accaha), probs = reference_cutoff)
-upper_quantile_accaha = quantile(abs(score_df$res_ascvd_10y_accaha), probs = 1-reference_cutoff)
-
-lower_quantile_mesa = quantile(abs(score_df$res_chd_10y_mesa), probs = reference_cutoff)
-upper_quantile_mesa = quantile(abs(score_df$res_chd_10y_mesa), probs = 1-reference_cutoff)
-
-lower_quantile_SCORE2 = quantile(abs(score_df$res_SCORE2), probs = reference_cutoff)
-upper_quantile_SCORE2 = quantile(abs(score_df$res_SCORE2), probs = 1-reference_cutoff)
-
-score_df = score_df %>%
-  mutate(
-    class_ascvd_10y_frs = calculate_classes(res_ascvd_10y_frs, lower_quantile_frs, upper_quantile_frs),
-    class_ascvd_10y_accaha = calculate_classes(res_ascvd_10y_accaha, lower_quantile_accaha, upper_quantile_accaha),
-    class_chd_10y_mesa = calculate_classes(res_chd_10y_mesa, lower_quantile_mesa, upper_quantile_mesa),
-    class_SCORE2 = calculate_classes(res_SCORE2, lower_quantile_SCORE2, upper_quantile_SCORE2)
-  )
-
+#calculate_classes = function(residuals, reference_cutoff = 0.2, top_vs_bottom_quantile = FALSE) {
+#  lower_quantile = quantile(abs(residuals), probs = reference_cutoff)
+#  upper_quantile = quantile(abs(residuals), probs = 1-reference_cutoff)
+#  if (top_vs_bottom_quantile == FALSE) {
+#    cohort_split = function(x) {
+#      if (abs(x) <= lower_quantile) {
+#        return(as.factor("reference"))
+#      } else if (x < -lower_quantile) {
+#        return(as.factor("resilient"))
+#      } else {
+#        return(as.factor("susceptible"))
+#      }
+#    }
+#  } else {
+#    cohort_split = function(x) {
+#      if (abs(x) <= lower_quantile){
+#        return(as.factor("reference"))
+#      } else if (x < -upper_quantile) {
+#        return(as.factor("resilient"))
+#      } else if (x > upper_quantile) {
+#        return(as.factor("susceptible"))
+#      } else {
+#        return(as.factor("ignore"))
+#      }
+#    }
+#  return(sapply(residuals, FUN = cohort_split))
+#}
+#
+#reference_cutoff = 0.2
+#lower_quantile_frs = quantile(abs(score_df$res_ascvd_10y_frs), probs = reference_cutoff)
+#upper_quantile_frs = quantile(abs(score_df$res_ascvd_10y_frs), probs = 1-reference_cutoff)
+#
+#lower_quantile_accaha = quantile(abs(score_df$res_ascvd_10y_accaha), probs = reference_cutoff)
+#upper_quantile_accaha = quantile(abs(score_df$res_ascvd_10y_accaha), probs = 1-reference_cutoff)
+#
+#lower_quantile_mesa = quantile(abs(score_df$res_chd_10y_mesa), probs = reference_cutoff)
+#upper_quantile_mesa = quantile(abs(score_df$res_chd_10y_mesa), probs = 1-reference_cutoff)
+#
+#lower_quantile_SCORE2 = quantile(abs(score_df$res_SCORE2), probs = reference_cutoff)
+#upper_quantile_SCORE2 = quantile(abs(score_df$res_SCORE2), probs = 1-reference_cutoff)
+#
+#score_df = score_df %>%
+#  mutate(
+#    class_ascvd_10y_frs = calculate_classes(res_ascvd_10y_frs, lower_quantile_frs, upper_quantile_frs),
+#    class_ascvd_10y_accaha = calculate_classes(res_ascvd_10y_accaha, lower_quantile_accaha, upper_quantile_accaha),
+#    class_chd_10y_mesa = calculate_classes(res_chd_10y_mesa, lower_quantile_mesa, upper_quantile_mesa),
+#    class_SCORE2 = calculate_classes(res_SCORE2, lower_quantile_SCORE2, upper_quantile_SCORE2)
+#  )
+#
 ```
 
 ```{r}
@@ -3854,6 +3867,7 @@ pheno_df %>%
 table(score_df$consensus_class)
 ```
 
+
 #### Method 2: Average Studentised Residual
 
 Externally studentised residuals. Importantly we assume the normality assumptions of the original model is met.
@@ -3888,6 +3902,9 @@ score_df = score_df %>%
 
 score_df$stud_class = score_df$consensus_class
 write.csv(score_df, "score_df.csv")
+```
+```{r}
+table(score_df$consensus_class)
 ```
 
 ```{r}
@@ -3927,7 +3944,7 @@ ggsave("myplot.png", plot = p, width = 12, height = 8, dpi = 300)
 
 ```{r}
 
-reference_cutoff = 0.2
+reference_cutoff = 0.15
 
 lower_quantile_resilient = quantile(score_df$res_hm_score[score_df$res_hm_score < 0], probs =   reference_cutoff)
 upper_quantile_resilient = quantile(score_df$res_hm_score[score_df$res_hm_score < 0], probs =   1-reference_cutoff/2)
@@ -4008,7 +4025,7 @@ Looking at how different the harmonic mean classes are from the studentized resi
 
 ```{r}
 
-score_df[score_df$harm_class != score_df$stud_class,]
+difference_df = score_df[score_df$harm_class != score_df$stud_class,]
 
 # Create a new data frame with the count of each combination
 df_count = score_df %>%
@@ -4022,13 +4039,13 @@ ggplot(df_count, aes(fill=stud_class, y=count, x=harm_class)) +
   scale_fill_brewer(palette = "Set1") +
   theme_minimal() +
   labs(x = "Harmonic Mean Class", y = "Studentised Residuals Class", fill = "Student Class", 
-       title = "Class Switching between Score Aggregation Methods (n = 43)")
+       title = sprintf("Class Switching between Score Aggregation Methods (n = %s)", dim(difference_df)[1]))
 
 
 score_df[!score_df$harm_class == score_df$stud_class,] %>%
   #pivot_longer(cols = c(harm_class, stud_class), names_to = "class_type", values_to = "class") %>%
   ggplot(aes(x = hm_score, y = ln_cacs, color = harm_class)) +
-  labs(x = "Harmonic Mean Score", y = "ln(CACS)", title = "Participants who switched class in Studentized Residuals (n = 43)", color = "Harmonic Mean Class") +
+  labs(x = "Harmonic Mean Score", y = "ln(CACS)", title = sprintf("Participants who switched class in Studentized Residuals (n = %s)", dim(difference_df)[1]), color = "Harmonic Mean Class") +
   geom_point() +
   theme_bw()
 
@@ -4382,17 +4399,33 @@ lipid_species_exp = longFormat(bioheart_mae[,,'Lipidomics_species'],
                  colDataCols = c("age", "smurfs", "cacs", "cacs_pct", "gensini"),
                  i = 2L)
 
-lipid_totals_exp = longFormat(bioheart_mae[,,'Lipidomics_totals'],
-                 colDataCols = c("age", "smurfs", "cacs", "cacs_pct", "gensini"),
-                 i = 2L)
-
-
 lipid_species_df = data.frame(lipid_species_exp) %>%
   filter(primary != "Pool") %>%
   pivot_wider(id_cols = c(primary, colname, age, smurfs, cacs, cacs_pct, gensini), 
               names_from = rowname, values_from = value) %>%
   transform(cacs = as.numeric(cacs), cacs_pct = as.numeric(cacs_pct), gensini = as.numeric(gensini), primary = as.numeric(primary))
 
+graph_df = score_df %>%
+  select(ID, consensus_class) %>%
+  inner_join(lipid_species_df, by=c('ID'='primary'))
+
+score_df %>%
+  select(ID, consensus_class) %>%
+  inner_join(lipid_species_df, by=c('ID'='primary')) %>%
+  filter(consensus_class %in% c("resilient", "reference")) %>%
+  pivot_longer(cols = -c(ID, consensus_class, colname, age, smurfs, cacs, cacs_pct, gensini), names_to = "lipid_species", values_to = "value") %>%
+  ggplot() +
+  aes(x = lipid_species, y = value, colour = consensus_class) +
+  geom_boxplot() +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+```
+
+```{r}
+lipid_totals_exp = longFormat(bioheart_mae[,,'Lipidomics_totals'],
+                 colDataCols = c("age", "smurfs", "cacs", "cacs_pct", "gensini"),
+                 i = 2L)
 
 lipid_totals_df = data.frame(lipid_totals_exp) %>%
   filter(primary != "Pool") %>%
@@ -4404,10 +4437,6 @@ graph_df = score_df %>%
   select(ID, consensus_class) %>%
   inner_join(lipid_totals_df, by=c('ID'='primary'))
 
-
-
-
-
 score_df %>%
   select(ID, consensus_class) %>%
   inner_join(lipid_totals_df, by=c('ID'='primary')) %>%
@@ -4415,19 +4444,6 @@ score_df %>%
   pivot_longer(cols = -c(ID, consensus_class, colname, age, smurfs, cacs, cacs_pct, gensini), names_to = "lipid_total", values_to = "value") %>%
   ggplot() +
   aes(x = lipid_total, y = value, colour = consensus_class) +
-  geom_boxplot() +
-  theme_bw() +
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
-
-
-
-score_df %>%
-  select(ID, consensus_class) %>%
-  inner_join(lipid_species_df, by=c('ID'='primary')) %>%
-  filter(consensus_class %in% c("resilient", "reference")) %>%
-  pivot_longer(cols = -c(ID, consensus_class, colname, age, smurfs, cacs, cacs_pct, gensini), names_to = "lipid_species", values_to = "value") %>%
-  ggplot() +
-  aes(x = lipid_species, y = value, colour = consensus_class) +
   geom_boxplot() +
   theme_bw() +
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
@@ -4461,7 +4477,60 @@ CM = makeContrasts(consensus_classresilient = consensus_classresilient - consens
 constrast_fit = contrasts.fit(efit, contrast = CM)
 constrast_fit = eBayes(constrast_fit)
 
-topTable(constrast_fit)
+topTable(constrast_fit, n=50)
+
+
+```
+##### Sense Check
+
+One thought is that the ceramides are only high in the resilient group because the we inherently select for high risk score population.
+
+```{r}
+graph_df$Cer.m.
+sense_check_df = score_df %>%
+  select(ID, ascvd_10y_frs, studres_ascvd_10y_frs, studres_ascvd_10y_accaha, studres_chd_10y_mesa, studres_SCORE2, avg_studres, consensus_class) %>%
+  inner_join(lipid_totals_df, by=c('ID'='primary')) 
+
+
+lm = lm(avg_studres ~ scale(`Cer.m.`), sense_check_df)
+summary(lm)
+
+lm = lm(studres_ascvd_10y_frs ~ `Cer.m.`, sense_check_df)
+summary(lm)
+
+lm = lm(studres_ascvd_10y_accaha ~ `Cer.m.`, sense_check_df)
+summary(lm)
+
+lm = lm(studres_chd_10y_mesa ~ `Cer.m.`, sense_check_df)
+summary(lm)
+
+lm = lm(studres_SCORE2 ~ `Cer.m.`, sense_check_df)
+summary(lm)
+
+lm = lm(ascvd_10y_frs ~ `Cer.m.`, sense_check_df)
+summary(lm)
+
+sense_check_df %>%
+  ggplot(
+    aes(x=`Cer.m.`, y=ascvd_10y_frs, color=consensus_class)
+  ) + geom_point()
+```
+
+
+```{r}
+
+score_df %>%
+  select(ID, consensus_class) %>%
+  inner_join(lipid_totals_df %>%
+               select(primary, colname, age, smurfs, cacs, cacs_pct, gensini, `Cer.m.`, `TG.SIM.`,`TG..NL.`)
+             , by=c('ID'='primary')) %>%
+  #filter(consensus_class %in% c("resilient", "reference")) %>%
+  pivot_longer(cols = -c(ID, consensus_class, colname, age, smurfs, cacs, cacs_pct, gensini), names_to = "lipid_total", values_to = "value") %>%
+  ggplot() +
+  aes(x = lipid_total, y = value, colour = consensus_class) +
+  geom_boxplot(notch=TRUE) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
 
 
 ```
@@ -4496,6 +4565,8 @@ score_df %>%
 
 ```
 
+
+
 ```{r}
 
 prot_patient_df = score_df %>%
@@ -4524,47 +4595,396 @@ topTable(constrast_fit)
 table(filtered_graph_df$consensus_class)
 
 ```
+#### CyTOF
 
 ```{r}
-# Differential Expression
-# https://link.springer.com/article/10.1007/s11306-015-0823-6
-# control for age, gender (Emwas et al. 2014), diet (Heinzmann et al. 2010), physical activity
+
+
+# Picks the first assay rlmSampleAllShort_H_batch
+exp = longFormat(bioheart_mae[,,'CyTOF'],
+                 colDataCols = c("age", "smurfs", "cacs", "cacs_pct", "gensini"),
+                 i = 1L)
+
+
+cytof_df = data.frame(exp) %>%
+  filter(primary != "Pool") %>%
+  mutate(primary = as.double(primary)) %>%
+  pivot_wider(id_cols = c(primary, colname, age, smurfs, cacs, cacs_pct, gensini), names_from = rowname, values_from = value) %>%
+  transform(cacs = as.numeric(cacs), cacs_pct = as.numeric(cacs_pct), gensini = as.numeric(gensini)) %>%
+  drop_na
+
+cytof_patient_df = score_df %>%
+  select(ID, consensus_class) %>%
+  inner_join(cytof_df, by=c('ID'='primary'))
+
+bioheart_mae[['CyTOF']]
 
 ```
 
+#### Targeted Analysis
+
+*dat_FRS*
+* `CRP`
+* `LP(a)`
+* `LDL-C`
+
+*Proteomics*
+* `SERPINA3`
+* `APOB` <- better LDL measurement
+* `FN1`
+____
+* `C7`
+* `LBP`
+* `SERPINF2`
+
+*Lipidomics Species*
+* `Cer.d18.1.24.1.` / `Cer.d18.1.24.0.`
+* `Cer.d18.1.16.0.` / `PC.16.0_22.6.`
+* `PC.16.0_16.0.`
+* `Cer.d18.1.16.0.`
+* `Cer.d18.1.18.0.`
+* `Cer.d18.1.24.0.`
+* `Cer.d18.1.24.1.`
+
+*CyTOF*
+* `Treg %CD4`
+* `Treg %total`
+* `14+ monos %myeloids`
+* `16+ monos %myeloids`
+
+##### Proteomics
+
 ```{r}
-dat_FRS
-library(CVrisk)
+
+single_prot_df = prot_df %>%
+  select(c(primary, age, smurfs, cacs, cacs_pct, gensini, FN1))
+
+prot_patient_df = score_df %>%
+  select(ID, consensus_class) %>%
+  inner_join(single_prot_df, by=c('ID'='primary'))
 
 
-dat_FRS %>%
-  select(age, gender, bmi, cvhx_dm, curr_smok, sbp, cacs, HDL)
+prot_patient_df %>%
+  ggplot(aes(x = consensus_class, y = FN1)) +
+  geom_boxplot(notch=TRUE) +
+  theme_bw()
 
 
-colnames(dat_FRS)
+lm_df = prot_patient_df %>%
+  select(-c(ID, consensus_class, age, smurfs, cacs, cacs_pct, gensini)) %>%
+  t()
 
-lm()
+design = model.matrix(~ consensus_class, prot_patient_df)
+
+rownames(lm_df)
+dim(lm_df)
+dim(design)
+fit = lmFit(lm_df, design)
+fit = eBayes(fit)
+topTable(fit)
+
+CM = makeContrasts(consensus_classresilient = consensus_classresilient - consensus_classreference, levels = design)
+constrast_fit = contrasts.fit(fit, contrast = CM)
+constrast_fit = eBayes(constrast_fit)
+topTable(constrast_fit)
+
+
+```
+##### Lipidomics
+
+```{r}
+
+species_interest = c("Cer.d18.1.24.1./Cer.d18.1.24.0.", "Cer.d18.1.16.0./PC.16.0_22.6.", 'PC.16.0_16.0.', 'Cer.d18.1.16.0.', 'Cer.d18.1.18.0.', 'Cer.d18.1.24.0.', 'Cer.d18.1.24.1.')
+
+graph_df = graph_df %>%
+  mutate(
+    "Cer.d18.1.24.1./Cer.d18.1.24.0." = `Cer.d18.1.24.1.`/`Cer.d18.1.24.0.`,
+    "Cer.d18.1.16.0./PC.16.0_22.6." = `Cer.d18.1.16.0.` / `PC.16.0_22.6.`
+  )
+
+filtered_graph_df = graph_df %>%
+  select(c(ID, consensus_class, colname, age, smurfs, cacs, cacs_pct, gensini, all_of(species_interest)))
+
+# Boxplot by species of interest
+p = filtered_graph_df %>%
+  select(c("consensus_class", species_interest)) %>%
+  tidyr::pivot_longer(cols = species_interest, names_to = "species", values_to = "value") %>%
+  ggplot(aes(x = consensus_class, y = value, fill = consensus_class)) +
+  geom_boxplot(notch = TRUE) +
+  facet_wrap(~ species, scales = "free_y") +
+  labs(x = "Consensus Class", y = "Value") +
+  theme_bw()
+p
+ggsave("boxplot.png", plot = p, width = 12, height = 8, dpi = 300)
+
+
+lm_df = filtered_graph_df %>%
+  dplyr::select(-c(ID, consensus_class, colname, age, smurfs, cacs, cacs_pct, gensini)) %>%
+  t()
+
+rownames(lm_df)
+dim(lm_df)
+dim(design)
+design = model.matrix(~ consensus_class, filtered_graph_df)
+fit = lmFit(lm_df, design)
+efit = eBayes(fit)
+topTable(efit)
+
+# Contrasts
+CM = makeContrasts(consensus_classresilient = consensus_classresilient - consensus_classreference, levels = design)
+#CM = makeContrasts(consensus_classresilient = consensus_classsusceptible - consensus_classresilient, levels = design)
+#CM = makeContrasts(consensus_classresilient = consensus_classsusceptible - consensus_classreference, levels = design)
+constrast_fit = contrasts.fit(efit, contrast = CM)
+constrast_fit = eBayes(constrast_fit)
+
+topTable(constrast_fit)
 ```
 
-```{r}
+##### CyTOF
 
-ensemble_residuals = function(y, df, ...) {
-  for(model in list(...)){
-    predictions = predict(model, df)
-    
-  }
+```{r}
+colnames(cytof_patient_df)
+
+cytof_patient_df
+species_interest = c("Treg..CD4", "Treg..total", "X14..monos..myeloids", "X16..monos..myeloids")
+
+filtered_graph_df = cytof_patient_df %>%
+  select(c(ID, consensus_class, colname, age, smurfs, cacs, cacs_pct, gensini, all_of(species_interest)))
+
+# Boxplot by species of interest
+p = filtered_graph_df %>%
+  select(c("consensus_class", species_interest)) %>%
+  tidyr::pivot_longer(cols = species_interest, names_to = "species", values_to = "value") %>%
+  ggplot(aes(x = consensus_class, y = value, fill = consensus_class)) +
+  geom_boxplot(notch = TRUE) +
+  facet_wrap(~ species, scales = "free_y") +
+  labs(x = "Consensus Class", y = "Value") +
+  theme_bw()
+p
+ggsave("boxplot.png", plot = p, width = 12, height = 8, dpi = 300)
+
+table(filtered_graph_df$consensus_class)
+
+lm_df = filtered_graph_df %>%
+  dplyr::select(-c(ID, consensus_class, colname, age, smurfs, cacs, cacs_pct, gensini)) %>%
+  t()
+
+rownames(lm_df)
+dim(lm_df)
+dim(design)
+design = model.matrix(~ consensus_class, filtered_graph_df)
+fit = lmFit(lm_df, design)
+efit = eBayes(fit)
+topTable(efit)
+
+# Contrasts
+CM = makeContrasts(consensus_classresilient = consensus_classresilient - consensus_classreference, levels = design)
+#CM = makeContrasts(consensus_classresilient = consensus_classsusceptible - consensus_classresilient, levels = design)
+#CM = makeContrasts(consensus_classresilient = consensus_classsusceptible - consensus_classreference, levels = design)
+constrast_fit = contrasts.fit(efit, contrast = CM)
+constrast_fit = eBayes(constrast_fit)
+
+topTable(constrast_fit)
+```
+##### dat-FRS
+
+Averages where there are multiple measurements in the case of CRP and LP(a)
+
+```{r}
+colnames(cytof_patient_df)
+
+
+species_interest = c("CRP","LP(a)")
+
+dat_FRS_patient_df = score_df %>%
+  select(ID, consensus_class) %>%
+  inner_join(dat_FRS, by=c('ID'='ID'))
+
+
+# Function to compute average from a character string of numbers
+compute_average <- function(x) {
+    # Split string into individual numbers, convert to numeric, and compute average
+    mean(as.numeric(unlist(strsplit(x, split = ",\\s*"))), na.rm = TRUE)
 }
 
-predict(elastic_model, X_test)
+# Pick species of interest and if there are multiple measurements to average
+filtered_graph_df = dat_FRS_patient_df %>%
+  select(c(ID, consensus_class, all_of(species_interest))) %>%
+  drop_na() %>%
+  mutate(
+        CRP = sapply(CRP, compute_average),
+        `LP(a)` = sapply(`LP(a)`, compute_average)
+    )
 
-resilience_residuals = residuals(cacs_FRS_model)
+# Boxplot by species of interest
+p = filtered_graph_df %>%
+  select(c("consensus_class", species_interest)) %>%
+  tidyr::pivot_longer(cols = species_interest, names_to = "species", values_to = "value") %>%
+  ggplot(aes(x = consensus_class, y = value, fill = consensus_class)) +
+  geom_boxplot(notch = TRUE) +
+  facet_wrap(~ species, scales = "free_y") +
+  labs(x = "Consensus Class", y = "Value") +
+  theme_bw()
+p
+ggsave("boxplot.png", plot = p, width = 12, height = 8, dpi = 300)
 
-test = lm(age ~ sbp, dat_FRS)
+table(filtered_graph_df$consensus_class)
 
-predict(test, dat_FRS)
+lm_df = filtered_graph_df %>%
+  dplyr::select(-c(ID, consensus_class)) %>%
+  t()
+
+rownames(lm_df)
+dim(lm_df)
+dim(design)
+design = model.matrix(~ consensus_class, filtered_graph_df)
+fit = lmFit(lm_df, design)
+efit = eBayes(fit)
+topTable(efit)
+
+# Contrasts
+#CM = makeContrasts(consensus_classresilient = consensus_classresilient - consensus_classreference, levels = design)
+CM = makeContrasts(consensus_classresilient = consensus_classsusceptible - consensus_classresilient, levels = design)
+#CM = makeContrasts(consensus_classresilient = consensus_classsusceptible - consensus_classreference, levels = design)
+constrast_fit = contrasts.fit(efit, contrast = CM)
+constrast_fit = eBayes(constrast_fit)
+
+topTable(constrast_fit)
+```
+
+#### SNPs
+
+```{r}
+# Load the biomaRt library
+library(biomaRt)
+
+rsids = scan("rsIDs.txt", what = "character")
+
+# Select the human SNP mart
+snpMart = useMart(biomart = "ENSEMBL_MART_SNP", dataset = "hsapiens_snp")
+
+# List of rsIDs
+#rsids = c("rs11207977", "rs186021206", "rs145297799", "rs3135506", "rs115849089", "rs1122608", "rs111245230", "rs11591147", "rs12916")  # replace with your actual rsIDs
+
+# Get chromosome and position
+results = getBM(attributes = c("refsnp_id", "chr_name", "chrom_start"), 
+                 filters = "snp_filter", 
+                 values = rsids, 
+                 mart = snpMart)
+
+# Add a column for the end position, which is the same as the start position for SNPs
+results$chrom_end = results$chrom_start
+# Assuming df is your existing dataframe
+results$label = paste0("R", 1:nrow(results))
+
+
+
+# Write the results to a text file
+write.table(results[, c("chr_name", "chrom_start", "chrom_end", "label")], 
+            file = "myranges.txt", 
+            sep = "\t", 
+            quote = FALSE, 
+            row.names = FALSE, 
+            col.names = FALSE)
+
 
 ```
 
+
+```{r}
+genotypes = read.csv("genotypes.raw", sep='')
+
+snps_info = read.table("extracted_snps.bim")
+
+snp_labels = results %>%
+  filter(chrom_start %in% snps_info$V4) %>%
+  pull(refsnp_id)
+
+
+genotype_columns = grep("^\\._", names(genotypes), value = TRUE)
+names(genotypes)[match(genotype_columns, names(genotypes))] = snp_labels
+
+snp_score_df = score_df %>%
+  inner_join(genotypes, by=c('ID'='IID')) %>%
+  select_if(~ !anyNA(.))
+```
+
+```{r}
+
+vis_miss(genotypes)
+
+```
+
+```{r}
+
+rs_columns = grep("^rs", names(snp_score_df), value = TRUE)
+
+rs_columns
+
+# Resilient versus Reference
+analyze_columns = function(df, rs_columns) {
+  # Filter rows where consensus_class is either "resilience" or "reference"
+  df <- df %>% filter(consensus_class %in% c("resilient", "reference"))
+  # Drop unused levels
+  df$consensus_class <- droplevels(df$consensus_class, except = c("resilient", "reference"))
+  
+  results = list()
+  for (col in rs_columns) {
+    # Create a contingency table
+    contingency_table = table(df[[col]], df$consensus_class)
+    print(contingency_table)
+    # Apply Fisher's exact test
+    fisher_test = fisher.test(contingency_table, workspace = 2e6)
+    
+    # Store the results
+    results[[col]] = list(
+      summary = contingency_table,
+      fisher_test = fisher_test
+    )
+  }
+  
+  return(results)
+}
+
+# Resilient versus Everything
+analyze_columns = function(df, rs_columns) {
+  # Filter rows where consensus_class is "reference", "resilient", "ignore", or "susceptible"
+  df <- df %>% filter(consensus_class %in% c("resilient", "reference", "ignore", "susceptible"))
+  
+  # Recode the "resilient", "ignore", and "susceptible" levels to "other"
+  df$consensus_class <- recode(df$consensus_class, "reference" = "other", "ignore" = "other", "susceptible" = "other")
+
+  # Drop unused levels
+  df$consensus_class <- droplevels(df$consensus_class)
+
+  results = list()
+  for (col in rs_columns) {
+    # Create a contingency table
+    contingency_table = table(df[[col]], df$consensus_class)
+    print(contingency_table)
+    # Apply Fisher's exact test
+    fisher_test = fisher.test(contingency_table, workspace = 2e6)
+    
+    # Store the results
+    results[[col]] = list(
+      summary = contingency_table,
+      fisher_test = fisher_test
+    )
+  }
+  
+  return(results)
+}
+
+results = analyze_columns(snp_score_df, rs_columns)
+results
+
+```
+```{r}
+
+write.csv(snp_score_df, "snp_score_df.csv", row.names = FALSE)
+
+
+```
 ## Junk Code
 
 ### Non-Linear SVM-RFE
