@@ -48,6 +48,7 @@ load("FRS_data.RData")
 
 ```{r}
 head(dat_FRS)
+
 ```
 
 
@@ -895,9 +896,32 @@ topTable(fit)
 CM = makeContrasts(consensus_classresilient = consensus_classresilient - consensus_classsusceptible, levels = design)
 constrast_fit = contrasts.fit(fit, contrast = CM)
 constrast_fit = eBayes(constrast_fit)
+topTable(constrast_fit, n=100)
+
+
+```
+
+```{r}
 topTable(constrast_fit)
+selected_rows <- subset(topTable(constrast_fit, n=100), adj.P.Val < 0.05)
+selected_metabolites <- rownames(selected_rows)
+selected_columns <- c("ID", selected_metabolites)
+filtered_df <- prot_patient_df[, colnames(prot_patient_df) %in% selected_columns]
+merged_df <- merge(filtered_df, dat_FRS[, c("ID", "LDL")], by = "ID")
 
 
+for(metabolite in selected_metabolites) {
+  plot_data <- merged_df[, c("ID", metabolite, "LDL")]
+  p <- ggplot(plot_data, aes_string(x=metabolite, y="LDL")) +
+    geom_point() +
+    geom_smooth(method="lm", se=FALSE) +
+    ggtitle(paste("Dot Plot of", metabolite, "vs LDL"))
+  print(p)
+  
+  correlation <- cor.test(plot_data[[metabolite]], plot_data[["LDL"]])
+  cat("Correlation between", metabolite, "and LDL is:", correlation$estimate, "\n")
+  cat("P-value is:", correlation$p.value, "\n\n")
+}
 ```
 
 #### CyTOF
@@ -1275,5 +1299,60 @@ analyze_columns = function(df, rs_columns) {
 results = analyze_columns(snp_score_df, rs_columns)
 results
 
+```
+
+
+```{r}
+# Changing Code
+
+df1 = dat_FRS %>%
+  # Remove people with statin
+  filter(!statin==1) %>%
+  # Remove where gender or cac or cacs_pct not recorded
+  drop_na(gender, cacs, cacs_pct) %>%
+  # Ensure cacs is numeric and handle NAs
+  mutate(cacs_pct = as.numeric(cacs_pct)) %>%
+  filter(!is.na(cacs_pct)) %>%
+  # Calculate LDL and ln_cacs
+  mutate(
+    LDL = Chol - HDL
+  ) %>%
+  # calculate residuals
+  mutate(
+    res_ldl = calculate_residuals(cacs_pct, LDL),
+  ) %>%
+  # calculate studentised residuals
+  mutate(
+    studres_ldl = studentised_residuals(cacs_pct, LDL)
+  )
+
+
+```
+
+```{r}
+
+reference_cutoff = 0.2
+
+lower_quantile_resilient = quantile(df1$studres_ldl[df1$studres_ldl < 0], probs =   reference_cutoff)
+upper_quantile_resilient = quantile(df1$studres_ldl[df1$studres_ldl < 0], probs =   1-reference_cutoff/2)
+lower_quantile_susceptible = quantile(df1$studres_ldl[df1$studres_ldl > 0], probs =   reference_cutoff/2)
+upper_quantile_susceptible = quantile(df1$studres_ldl[df1$studres_ldl > 0], probs =   1-reference_cutoff)
+
+
+
+df1 = df1 %>%
+  mutate(
+    consensus_class = calculate_classes_2(studres_ldl, 
+                                            lower_quantile_resilient, 
+                                            upper_quantile_resilient, 
+                                            lower_quantile_susceptible, 
+                                            upper_quantile_susceptible)
+  )
+
+
+df1$stud_class = df1$consensus_class
+score_df = df1
+
+# Now run all the individual analysis of each metabolites
 ```
 
