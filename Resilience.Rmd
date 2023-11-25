@@ -606,6 +606,7 @@ fviz_pca_ind(metab_pca_limited,
              gradient.cols = c("green", "red"),
              legend.title = "Groups")
 ```
+
 ##### Differential Expression Analysis
 
 The contrasts are `resilient` - `reference`.
@@ -624,7 +625,7 @@ efit = eBayes(fit)
 topTable(efit)
 
 # Contrasts
-CM = makeContrasts(consensus_classresilient = consensus_classresilient - consensus_classreference, levels = design)
+CM = makeContrasts(consensus_classresilient = consensus_classresilient, levels = design)
 #CM = makeContrasts(consensus_classresilient = consensus_classsusceptible - consensus_classresilient, levels = design)
 #CM = makeContrasts(consensus_classresilient = consensus_classsusceptible - consensus_classreference, levels = design)
 constrast_fit = contrasts.fit(efit, contrast = CM)
@@ -813,7 +814,7 @@ The contrasts are `resilient` - `reference`.
 ```{r, warning=FALSE}
 
 # Contrasts
-CM = makeContrasts(consensus_classresilient = consensus_classresilient - consensus_classreference, levels = design)
+CM = makeContrasts(consensus_classresilient = consensus_classresilient, levels = design)
 #CM = makeContrasts(consensus_classresilient = consensus_classsusceptible - consensus_classresilient, levels = design)
 #CM = makeContrasts(consensus_classresilient = consensus_classsusceptible - consensus_classreference, levels = design)
 constrast_fit = contrasts.fit(efit, contrast = CM)
@@ -893,10 +894,10 @@ fit = lmFit(lm_df, design)
 fit = eBayes(fit)
 topTable(fit)
 
-CM = makeContrasts(consensus_classresilient = consensus_classresilient - consensus_classsusceptible, levels = design)
+CM = makeContrasts(consensus_classresilient = consensus_classresilient, levels = design)
 constrast_fit = contrasts.fit(fit, contrast = CM)
 constrast_fit = eBayes(constrast_fit)
-topTable(constrast_fit, n=100)
+topTable(constrast_fit, n=200)
 
 
 ```
@@ -1164,8 +1165,8 @@ efit = eBayes(fit)
 topTable(efit)
 
 # Contrasts
-#CM = makeContrasts(consensus_classresilient = consensus_classresilient - consensus_classreference, levels = design)
-CM = makeContrasts(consensus_classresilient = consensus_classsusceptible - consensus_classresilient, levels = design)
+CM = makeContrasts(consensus_classresilient = consensus_classresilient - consensus_classreference, levels = design)
+#CM = makeContrasts(consensus_classresilient = consensus_classsusceptible - consensus_classresilient, levels = design)
 #CM = makeContrasts(consensus_classresilient = consensus_classsusceptible - consensus_classreference, levels = design)
 constrast_fit = contrasts.fit(efit, contrast = CM)
 constrast_fit = eBayes(constrast_fit)
@@ -1355,4 +1356,62 @@ score_df = df1
 
 # Now run all the individual analysis of each metabolites
 ```
+
+
+### Score Binning (Alternative Approach)
+
+```{r}
+colnames(score_df)
+score_df = score_df %>%
+  mutate(ln_cacs = log(cacs+1))
+
+# Assuming score_df is your dataset and ascvd_10y_frs is your risk score column.
+
+# 1. Bin subjects into 10 bins by ascvd_10y_frs risk score
+# Define the range for the risk score to be binned
+bin_range = seq(min(score_df$ascvd_10y_frs), max(score_df$ascvd_10y_frs), length.out = 11)
+score_df$bin = cut(score_df$ascvd_10y_frs, breaks = bin_range, include.lowest = TRUE, labels = FALSE)
+
+# 2. Calculate z-score for cacs score within each bin
+score_df = score_df %>%
+  group_by(bin) %>%
+  mutate(mean_cacs = mean(ln_cacs, na.rm = TRUE),
+         sd_cacs = sd(ln_cacs, na.rm = TRUE),
+         z_score = (ln_cacs - mean_cacs) / sd_cacs) %>%
+  ungroup()
+
+# 3. Create consensus_class factor column
+score_df$consensus_class = case_when(
+  score_df$z_score < -1 ~ "resilient",
+  score_df$z_score > 1 ~ "susceptible",
+  abs(score_df$z_score) <= 0.5 ~ "reference",
+  TRUE ~ "ignore"
+)
+
+# Convert to factor for plotting purposes, setting 'reference' as the reference level
+score_df$consensus_class = factor(score_df$consensus_class, levels = c("reference", "resilient", "susceptible", "ignore"))
+
+# 4. Graph cacs against ascvd_10y_frs risk score
+ggplot(score_df, aes(x = ascvd_10y_frs, y = ln_cacs, color = consensus_class)) +
+  geom_point() +
+  geom_vline(xintercept = bin_range, linetype = "dashed", color = "red") +
+  scale_color_manual(values = c("resilient" = "green", "reference" = "blue", "susceptible" = "red", "ignore" = "grey50")) +
+  theme_bw() +
+  labs(title = "ln(CACS+1) vs ASCVD 10y FRS Risk Score", x = "ASCVD 10y FRS Risk Score", y = "ln(CACS+1)", color = "Consensus Class")
+
+table(score_df$consensus_class)
+
+```
+
+```{r}
+ggplot(score_df) +
+  aes(y=z_score, x=ascvd_10y_frs, color = consensus_class) +
+  geom_point() +
+  theme_bw() +
+  labs(title = "ln(CACS+1) Z-Score vs ASCVD 10y FRS Risk Score", x = "ASCVD 10y FRS Risk Score", y = "Z-Score", color = "Consensus Class")
+
+```
+
+
+
 
