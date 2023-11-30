@@ -35,7 +35,9 @@ library(limma)
 library(plotly)
 library(Glimma)
 library(ggrepel)
-
+library(pscl)
+library(bestNormalize)
+library(gridExtra)
 library(RiskScorescvd)
 ```
 
@@ -364,9 +366,11 @@ pheno_df %>%
   geom_point() +
   theme_bw()
 
+
 score_df %>%
   vis_miss()
 
+# Drop all NA across all scores
 score_df = score_df %>% drop_na()
 
 
@@ -424,7 +428,226 @@ score_df %>%
 
 ```
 
-### Classifying Residuals
+
+### Calculating Zero-Inflated Regression Percentiles by Risk Score
+
+The following code is from Avanti & Sina.
+
+```{r}
+# The following fits all the risk scores to a normal distribution, effectively meaning you care more about the ranks of the risk scores rather than the values. Also means you pay more emphasis to very high risk or very low risk.
+
+score_df = score_df %>% mutate(
+    ordernorm_ascvd_10y_frs = orderNorm(ascvd_10y_frs)$x.t,
+    ordernorm_ascvd_10y_accaha = orderNorm(ascvd_10y_accaha)$x.t,
+    ordernorm_chd_10y_mesa = orderNorm(chd_10y_mesa)$x.t,
+    ordernorm_SCORE2 = orderNorm(SCORE2)$x.t
+)
+
+
+```
+
+```{r}
+# Fits Zero Inflated model w/ only FRS Score
+
+zeroinflmodel = zeroinfl(100*cacs ~ ordernorm_ascvd_10y_frs | ordernorm_ascvd_10y_frs, data = score_df, dist = "negbin")
+summary(zeroinflmodel)
+```
+
+```{r}
+# Fits Zero Inflated model w/ all scores
+
+zeroinflmodel = zeroinfl(100*cacs ~ ordernorm_ascvd_10y_frs + ordernorm_ascvd_10y_accaha + ordernorm_chd_10y_mesa + ordernorm_SCORE2 | ordernorm_ascvd_10y_frs + ordernorm_ascvd_10y_accaha + ordernorm_chd_10y_mesa + ordernorm_SCORE2, data = score_df, dist = "negbin")
+summary(zeroinflmodel)
+```
+
+
+```{r}
+score_df = score_df %>% 
+  mutate(
+    # Predicted counts from the negative binomial part of the zero-inflated model
+    cacs_riskscorecond_countpred = predict(zeroinflmodel, data=score_df, type="count") / 100,
+    
+    # Predicted probability of a zero result from the zero-inflated part of the model
+    cacs_riskscorecond_zeroprob = predict(zeroinflmodel, data=score_df, type="zero"),
+    
+    # Overall predicted mean counts from the combined negative binomial & zero-inflated model
+    cacs_riskscorecond_meanpred = predict(zeroinflmodel, data=score_df, type="response") / 100
+  ) %>% 
+  mutate(
+    #The distribution is discrete, so for a given CACS value, I
+    # will set the percentile to the mean of p(obs) <= CACS
+    # and p(obs) < CACS
+    cacs_riskscorecond_pct = case_when(
+      #when CACS > 0, p(obs) <= CACS and p(obs) < CACS both
+      # include the probability that p(obs)==0 
+      cacs > 0 ~ cacs_riskscorecond_zeroprob + (1 - cacs_riskscorecond_zeroprob) * 0.5 * (
+        pnbinom(q = 100 * score_df$cacs, size = zeroinflmodel$theta, mu = 100 * cacs_riskscorecond_countpred) +
+        pnbinom(q = 100 * (score_df$cacs) - 1, size = zeroinflmodel$theta, mu = 100 * cacs_riskscorecond_countpred)
+      ),
+      #when CACS==0, p(obs) <= CACS is just the probability
+      # that p(obs)==0, because p(obs) < 0 is 0
+      #Note that we can get an observation of zero either
+      # because we are drawing from the zero inflation, or
+      # because we are drawing from the counts model and the
+      # counts model happened to generate a 0
+      cacs == 0 ~ 0.5 * (cacs_riskscorecond_zeroprob +
+        pnbinom(q = 100 * score_df$cacs, size = zeroinflmodel$theta, mu = 100 * cacs_riskscorecond_countpred))
+    )
+  )
+
+```
+
+```{r}
+
+options(repr.plot.width = 15, repr.plot.height = 8)
+
+plot_theme <- theme(
+  legend.key.height = unit(2.5, "cm"),
+  legend.title = element_text(size = 15, angle = 90),
+  legend.title.align = 0.5,
+  legend.direction = "vertical",
+  text = element_text(size = 20)
+)
+
+plot_guide <- guides(
+  size = "none", 
+  colour = guide_colourbar(title.position = "right")
+)
+
+plot_zeroinflnegbinom_truevspredcacs <- ggplot(score_df, aes(
+  x = log(1 + cacs_riskscorecond_meanpred),
+  y = log(1 + cacs), 
+  color = cacs_riskscorecond_pct
+)) + 
+  geom_point(size = 3) + 
+  plot_guide + 
+  plot_theme
+
+plot_zeroinflnegbinom_cacspctvscacspred <- ggplot(score_df, aes(
+  x = log(1 + cacs_riskscorecond_meanpred), 
+  y = cacs_riskscorecond_pct,
+  color = log(1 + cacs)
+)) + 
+  geom_point(size = 3) + 
+  plot_guide + 
+  plot_theme
+
+grid.arrange(
+  plot_zeroinflnegbinom_truevspredcacs, 
+  plot_zeroinflnegbinom_cacspctvscacspred, 
+  ncol = 2
+)
+
+
+```
+### Calculating Zero-Inflated Regression Percentiles by Individual Variables
+
+```{r}
+df1 = dat_FRS %>%
+  # Remove people with statin
+  filter(!statin==1) %>%
+  # Remove where gender or cac or cacs_pct not recorded
+  drop_na(gender, cacs, cacs_pct) %>%
+  # Ensure cacs is numeric and handle NAs
+  mutate(cacs = as.numeric(cacs)) %>%
+  filter(!is.na(cacs)) %>%
+  # Calculate LDL and ln_cacs
+  mutate(
+    LDL = Chol - HDL
+  ) %>%
+  mutate(ln_cacs = log(cacs+1))
+
+
+# Fits Zero Inflated model w/ only LDL
+
+zeroinflmodel = zeroinfl(100*cacs ~ age | age, data = df1, dist = "negbin")
+summary(zeroinflmodel)
+
+```
+```{r}
+df1 = df1 %>% 
+  mutate(
+    # Predicted counts from the negative binomial part of the zero-inflated model
+    cacs_riskscorecond_countpred = predict(zeroinflmodel, data=df1, type="count") / 100,
+    
+    # Predicted probability of a zero result from the zero-inflated part of the model
+    cacs_riskscorecond_zeroprob = predict(zeroinflmodel, data=df1, type="zero"),
+    
+    # Overall predicted mean counts from the combined negative binomial & zero-inflated model
+    cacs_riskscorecond_meanpred = predict(zeroinflmodel, data=df1, type="response") / 100
+  ) %>% 
+  mutate(
+    #The distribution is discrete, so for a given CACS value, I
+    # will set the percentile to the mean of p(obs) <= CACS
+    # and p(obs) < CACS
+    cacs_riskscorecond_pct = case_when(
+      #when CACS > 0, p(obs) <= CACS and p(obs) < CACS both
+      # include the probability that p(obs)==0 
+      cacs > 0 ~ cacs_riskscorecond_zeroprob + (1 - cacs_riskscorecond_zeroprob) * 0.5 * (
+        pnbinom(q = 100 * df1$cacs, size = zeroinflmodel$theta, mu = 100 * cacs_riskscorecond_countpred) +
+        pnbinom(q = 100 * (df1$cacs) - 1, size = zeroinflmodel$theta, mu = 100 * cacs_riskscorecond_countpred)
+      ),
+      #when CACS==0, p(obs) <= CACS is just the probability
+      # that p(obs)==0, because p(obs) < 0 is 0
+      #Note that we can get an observation of zero either
+      # because we are drawing from the zero inflation, or
+      # because we are drawing from the counts model and the
+      # counts model happened to generate a 0
+      cacs == 0 ~ 0.5 * (cacs_riskscorecond_zeroprob +
+        pnbinom(q = 100 * df1$cacs, size = zeroinflmodel$theta, mu = 100 * cacs_riskscorecond_countpred))
+    )
+  )
+
+score_df = df1
+
+```
+
+```{r}
+
+options(repr.plot.width = 15, repr.plot.height = 8)
+
+plot_theme <- theme(
+  legend.key.height = unit(2.5, "cm"),
+  legend.title = element_text(size = 15, angle = 90),
+  legend.title.align = 0.5,
+  legend.direction = "vertical",
+  text = element_text(size = 20)
+)
+
+plot_guide <- guides(
+  size = "none", 
+  colour = guide_colourbar(title.position = "right")
+)
+
+plot_zeroinflnegbinom_truevspredcacs <- ggplot(df1, aes(
+  x = log(1 + cacs_riskscorecond_meanpred),
+  y = log(1 + cacs), 
+  color = cacs_riskscorecond_pct
+)) + 
+  geom_point(size = 3) + 
+  plot_guide + 
+  plot_theme
+
+plot_zeroinflnegbinom_cacspctvscacspred <- ggplot(df1, aes(
+  x = log(1 + cacs_riskscorecond_meanpred), 
+  y = cacs_riskscorecond_pct,
+  color = log(1 + cacs)
+)) + 
+  geom_point(size = 3) + 
+  plot_guide + 
+  plot_theme
+
+grid.arrange(
+  plot_zeroinflnegbinom_truevspredcacs, 
+  plot_zeroinflnegbinom_cacspctvscacspred, 
+  ncol = 2
+)
+
+
+```
+
+
+### Classifying by Residuals
 
 For each subject, the average studentised residual across all risk scores was used to classify the subject as either `resilient`, `susceptible`, `reference`, `ignore`.
 
@@ -489,11 +712,13 @@ score_df = score_df %>%
 score_df$stud_class = score_df$consensus_class
 write.csv(score_df, "score_df.csv")
 ```
+
 The following show the results of the groupings.
 
 ```{r}
 table(score_df$consensus_class)
 ```
+
 * The graph below shows the plots of `ln(CACS+1)` against the various risk scores. 
 * The colours represent the classifications made based on the average studentised residuals across all the risk scores.
 
@@ -528,7 +753,239 @@ p = gridExtra::grid.arrange(grobs = plots, ncol = 2, nrow = 2)
 ggsave("myplot.png", plot = p, width = 12, height = 8, dpi = 300)
 ```
 
+### Classifying by Z-Score binned by Risk Score (Alternative)
 
+```{r}
+colnames(score_df)
+score_df = score_df %>%
+  mutate(ln_cacs = log(cacs+1))
+
+# Assuming score_df is your dataset and ascvd_10y_frs is your risk score column.
+score_df = score_df %>% drop_na(ascvd_10y_frs)
+
+# Assuming score_df is your dataset and ascvd_10y_accaha is your risk score column.
+#score_df = score_df %>% drop_na(ascvd_10y_accaha)
+
+
+# 1. Bin subjects into 10 bins by risk score
+# Define the range for the risk score to be binned
+bin_range = seq(min(score_df$ascvd_10y_frs), max(score_df$ascvd_10y_frs), length.out = 11)
+score_df$bin = cut(score_df$ascvd_10y_frs, breaks = bin_range, include.lowest = TRUE, labels = FALSE)
+
+# 2. Calculate z-score for cacs score within each bin
+score_df = score_df %>%
+  group_by(bin) %>%
+  mutate(mean_cacs = mean(ln_cacs, na.rm = TRUE),
+         sd_cacs = sd(ln_cacs, na.rm = TRUE),
+         z_score = (ln_cacs - mean_cacs) / sd_cacs) %>%
+  ungroup()
+
+# 3. Create consensus_class factor column
+score_df$consensus_class = case_when(
+  score_df$z_score < -1 ~ "resilient",
+  score_df$z_score > 1 ~ "susceptible",
+  abs(score_df$z_score) <= 0.5 ~ "reference",
+  TRUE ~ "ignore"
+)
+
+# Convert to factor for plotting purposes, setting 'reference' as the reference level
+score_df$consensus_class = factor(score_df$consensus_class, levels = c("reference", "resilient", "susceptible", "ignore"))
+
+# 4. Graph cacs against ascvd_10y_frs risk score
+ggplot(score_df, aes(x = ascvd_10y_frs, y = ln_cacs, color = consensus_class)) +
+  geom_point() +
+  geom_vline(xintercept = bin_range, linetype = "dashed", color = "red") +
+  scale_color_manual(values = c("resilient" = "green", "reference" = "blue", "susceptible" = "red", "ignore" = "grey50")) +
+  theme_bw() +
+  labs(title = "ln(CACS+1) vs ASCVD 10y FRS Risk Score", x = "ASCVD 10y FRS Risk Score", y = "ln(CACS+1)", color = "Consensus Class")
+
+table(score_df$consensus_class)
+
+```
+
+```{r}
+ggplot(score_df) +
+  aes(y=z_score, x=ascvd_10y_frs, color = consensus_class) +
+  geom_point() +
+  theme_bw() +
+  labs(title = "ln(CACS+1) Z-Score vs ASCVD 10y FRS Risk Score", x = "ASCVD 10y FRS Risk Score", y = "Z-Score", color = "Consensus Class")
+
+```
+You can see a concerning number of people who are old, with no CACS that our model considers "not resilient"
+
+```{r}
+score_df %>% 
+  inner_join(dat_FRS, by=c('ID')) %>%
+  ggplot(aes(x = age, y = ln_cacs, color = consensus_class)) +
+  geom_point() +
+  geom_vline(xintercept = bin_range, linetype = "dashed", color = "red") +
+  scale_color_manual(values = c("resilient" = "green", "reference" = "blue", "susceptible" = "red", "ignore" = "grey50")) +
+  theme_bw() +
+  labs(title = "ln(CACS+1) vs Age", x = "Age", y = "ln(CACS+1)", color = "Consensus Class")
+
+```
+
+### Classifying by Z-Score binned by Individual Variable (Alternative)
+
+```{r}
+colnames(score_df)
+df1 = dat_FRS %>%
+  # Remove people with statin
+  filter(!statin==1) %>%
+  # Remove where gender or cac or cacs_pct not recorded
+  drop_na(gender, cacs, cacs_pct) %>%
+  # Ensure cacs is numeric and handle NAs
+  mutate(cacs = as.numeric(cacs)) %>%
+  filter(!is.na(cacs)) %>%
+  # Calculate LDL and ln_cacs
+  mutate(
+    LDL = Chol - HDL
+  ) %>%
+  mutate(ln_cacs = log(cacs+1))
+
+# 1. Bin subjects into 10 bins by risk score
+# Define the range for the risk score to be binned
+bin_range = seq(min(df1$LDL), max(df1$LDL), length.out = 11)
+df1$bin = cut(df1$LDL, breaks = bin_range, include.lowest = TRUE, labels = FALSE)
+
+# 2. Calculate z-score for cacs score within each bin
+df1 = df1 %>%
+  group_by(bin) %>%
+  mutate(mean_cacs = mean(ln_cacs, na.rm = TRUE),
+         sd_cacs = sd(ln_cacs, na.rm = TRUE),
+         z_score = (ln_cacs - mean_cacs) / sd_cacs) %>%
+  ungroup()
+
+# 3. Create consensus_class factor column
+df1$consensus_class = case_when(
+  df1$z_score < -1 ~ "resilient",
+  df1$z_score > 1 ~ "susceptible",
+  abs(df1$z_score) <= 0.5 ~ "reference",
+  TRUE ~ "ignore"
+)
+
+# Convert to factor for plotting purposes, setting 'reference' as the reference level
+df1$consensus_class = factor(df1$consensus_class, levels = c("reference", "resilient", "susceptible", "ignore"))
+
+# 4. Graph cacs against ascvd_10y_frs risk score
+ggplot(df1, aes(x = LDL, y = ln_cacs, color = consensus_class)) +
+  geom_point() +
+  geom_vline(xintercept = bin_range, linetype = "dashed", color = "red") +
+  scale_color_manual(values = c("resilient" = "green", "reference" = "blue", "susceptible" = "red", "ignore" = "grey50")) +
+  theme_bw() +
+  labs(title = "ln(CACS+1) vs ASCVD 10y FRS Risk Score", x = "ASCVD 10y FRS Risk Score", y = "ln(CACS+1)", color = "Consensus Class")
+
+table(df1$consensus_class)
+
+```
+
+```{r}
+ggplot(score_df) +
+  aes(y=z_score, x=ascvd_10y_frs, color = consensus_class) +
+  geom_point() +
+  theme_bw() +
+  labs(title = "ln(CACS+1) Z-Score vs ASCVD 10y FRS Risk Score", x = "ASCVD 10y FRS Risk Score", y = "Z-Score", color = "Consensus Class")
+
+```
+
+You can see a concerning number of people who are old, with no CACS that our model considers "not resilient"
+
+```{r}
+score_df %>% 
+  inner_join(dat_FRS, by=c('ID')) %>%
+  ggplot(aes(x = age, y = ln_cacs, color = consensus_class)) +
+  geom_point() +
+  geom_vline(xintercept = bin_range, linetype = "dashed", color = "red") +
+  scale_color_manual(values = c("resilient" = "green", "reference" = "blue", "susceptible" = "red", "ignore" = "grey50")) +
+  theme_bw() +
+  labs(title = "ln(CACS+1) vs Age", x = "Age", y = "ln(CACS+1)", color = "Consensus Class")
+
+```
+
+### Classifying by Zero-Inflated Regression Percentiles by Risk Score
+
+```{r}
+
+score_df$consensus_class = case_when(
+  score_df$cacs_riskscorecond_pct < 0.21 ~ "resilient",
+  score_df$cacs_riskscorecond_pct > 0.79 ~ "susceptible",
+  ((score_df$cacs_riskscorecond_pct > 0.42) & (score_df$cacs_riskscorecond_pct < 0.58))  ~ "reference",
+  TRUE ~ "ignore"
+)
+
+score_df %>% select(consensus_class, cacs_riskscorecond_pct)
+
+ggplot(score_df, aes(x = ascvd_10y_frs, y = cacs, color = consensus_class)) +
+  geom_point() +
+  scale_color_manual(values = c("resilient" = "green", "reference" = "blue", "susceptible" = "red", "ignore" = "grey50")) +
+  theme_bw() +
+  labs(title = "CACS vs ASCVD 10y FRS Risk Score", x = "ASCVD 10y FRS Risk Score", y = "CACS", color = "Consensus Class")
+
+ggplot(score_df, aes(x = ascvd_10y_frs, y = ln_cacs, color = consensus_class)) +
+  geom_point() +
+  scale_color_manual(values = c("resilient" = "green", "reference" = "blue", "susceptible" = "red", "ignore" = "grey50")) +
+  theme_bw() +
+  labs(title = "ln(CACS+1) vs ASCVD 10y FRS Risk Score", x = "ASCVD 10y FRS Risk Score", y = "ln(CACS+1)", color = "Consensus Class")
+
+ggplot(score_df, aes(x = ordernorm_ascvd_10y_frs, y = cacs_riskscorecond_pct, color = consensus_class)) +
+  geom_point() +
+  scale_color_manual(values = c("resilient" = "green", "reference" = "blue", "susceptible" = "red", "ignore" = "grey50")) +
+  theme_bw() +
+  labs(title = "CACS Percentile (Risk Adjusted) vs Normalised ASCVD 10y FRS Risk Score", x = "Normalised ASCVD 10y FRS Risk Score", y = "CACS Percentile (Risk Adjusted)", color = "Consensus Class")
+
+# Convert to factor for plotting purposes, setting 'reference' as the reference level
+score_df$consensus_class = factor(score_df$consensus_class, levels = c("reference", "resilient", "susceptible", "ignore"))
+
+table(score_df$consensus_class)
+```
+### Classifying by Zero-Inflated Regression Percentiles by Individual Variables
+
+```{r}
+
+df1$consensus_class = case_when(
+  df1$cacs_riskscorecond_pct < 0.20 ~ "resilient",
+  df1$cacs_riskscorecond_pct > 0.80 ~ "susceptible",
+  ((df1$cacs_riskscorecond_pct > 0.40) & (df1$cacs_riskscorecond_pct < 0.60))  ~ "reference",
+  TRUE ~ "ignore"
+)
+
+df1 %>% select(consensus_class, cacs_riskscorecond_pct)
+
+ggplot(df1, aes(x = age, y = cacs, color = consensus_class)) +
+  geom_point() +
+  scale_color_manual(values = c("resilient" = "green", "reference" = "blue", "susceptible" = "red", "ignore" = "grey50")) +
+  theme_bw() +
+  labs(title = "CACS vs Age", x = "Age", y = "CACS", color = "Consensus Class")
+
+ggplot(df1, aes(x = age, y = ln_cacs, color = consensus_class)) +
+  geom_point() +
+  scale_color_manual(values = c("resilient" = "green", "reference" = "blue", "susceptible" = "red", "ignore" = "grey50")) +
+  theme_bw() +
+  labs(title = "ln(CACS+1) vs Age", x = "Age", y = "ln(CACS+1)", color = "Consensus Class")
+
+ggplot(df1, aes(x = age, y = cacs_riskscorecond_pct, color = consensus_class)) +
+  geom_point() +
+  scale_color_manual(values = c("resilient" = "green", "reference" = "blue", "susceptible" = "red", "ignore" = "grey50")) +
+  theme_bw() +
+  labs(title = "CACS Percentile (Age Adjusted) vs Age", x = "Age", y = "CACS Percentile (Age Adjusted)", color = "Consensus Class")
+
+# Convert to factor for plotting purposes, setting 'reference' as the reference level
+df1$consensus_class = factor(score_df$consensus_class, levels = c("reference", "resilient", "susceptible", "ignore"))
+
+score_df = df1
+table(df1$consensus_class)
+```
+
+```{r}
+
+df1 %>% 
+  ggplot(aes(x = age, y = ln_cacs, color = consensus_class)) +
+  geom_point() +
+  scale_color_manual(values = c("resilient" = "green", "reference" = "blue", "susceptible" = "red", "ignore" = "grey50")) +
+  theme_bw() +
+  labs(title = "ln(CACS+1) vs Age", x = "Age", y = "ln(CACS+1)", color = "Consensus Class")
+
+```
 ### Comparing Classes
 
 #### Metabolomics
@@ -625,9 +1082,9 @@ efit = eBayes(fit)
 topTable(efit)
 
 # Contrasts
-CM = makeContrasts(consensus_classresilient = consensus_classresilient, levels = design)
-#CM = makeContrasts(consensus_classresilient = consensus_classsusceptible - consensus_classresilient, levels = design)
-#CM = makeContrasts(consensus_classresilient = consensus_classsusceptible - consensus_classreference, levels = design)
+#CM = makeContrasts(consensus_classresilient = consensus_classresilient, levels = design)
+CM = makeContrasts(consensus_classcomparison = consensus_classsusceptible - consensus_classresilient, levels = design)
+#CM = makeContrasts(consensus_classsusceptible = consensus_classsusceptible, levels = design)
 constrast_fit = contrasts.fit(efit, contrast = CM)
 constrast_fit = eBayes(constrast_fit)
 
@@ -792,6 +1249,7 @@ score_df %>%
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
 
 ```
+
 ##### Differential Expression Analysis
 
 ```{r, warning=FALSE}
@@ -815,8 +1273,8 @@ The contrasts are `resilient` - `reference`.
 
 # Contrasts
 CM = makeContrasts(consensus_classresilient = consensus_classresilient, levels = design)
-#CM = makeContrasts(consensus_classresilient = consensus_classsusceptible - consensus_classresilient, levels = design)
-#CM = makeContrasts(consensus_classresilient = consensus_classsusceptible - consensus_classreference, levels = design)
+#CM = makeContrasts(consensus_classcompare = consensus_classsusceptible - consensus_classresilient, levels = design)
+#CM = makeContrasts(consensus_classsusceptible = consensus_classsusceptible, levels = design)
 constrast_fit = contrasts.fit(efit, contrast = CM)
 constrast_fit = eBayes(constrast_fit)
 
@@ -894,36 +1352,64 @@ fit = lmFit(lm_df, design)
 fit = eBayes(fit)
 topTable(fit)
 
-CM = makeContrasts(consensus_classresilient = consensus_classresilient, levels = design)
+#CM = makeContrasts(consensus_classresilient = consensus_classresilient, levels = design)
+CM = makeContrasts(consensus_classcompare = consensus_classsusceptible - consensus_classresilient, levels = design)
+#CM = makeContrasts(consensus_classsusceptible = consensus_classsusceptible, levels = design)
 constrast_fit = contrasts.fit(fit, contrast = CM)
 constrast_fit = eBayes(constrast_fit)
-topTable(constrast_fit, n=200)
+topTable(constrast_fit)
 
+table(score_df$consensus_class)
+```
+```{r}
+score_df %>% 
+  select(ascvd_10y_frs, ascvd_10y_accaha, chd_10y_mesa, SCORE2) %>%
+  cor(use = "complete.obs")
 
 ```
 
 ```{r}
-topTable(constrast_fit)
-selected_rows <- subset(topTable(constrast_fit, n=100), adj.P.Val < 0.05)
-selected_metabolites <- rownames(selected_rows)
-selected_columns <- c("ID", selected_metabolites)
-filtered_df <- prot_patient_df[, colnames(prot_patient_df) %in% selected_columns]
-merged_df <- merge(filtered_df, dat_FRS[, c("ID", "LDL")], by = "ID")
+
+# Volcano Plot
+library(EnhancedVolcano)
+p = EnhancedVolcano(
+  topTable(constrast_fit, n=500),
+  lab = rownames(constrast_fit),
+  x = "logFC",
+  y = "adj.P.Val",
+  title = "Resilient vs Reference",
+  FCcutoff = 0.20,
+  pCutoff = 0.05,
+  labSize = 6
+)
+
+# Volcano Plot
+library(EnhancedVolcano)
+p = EnhancedVolcano(
+  constrast_fit,
+  lab = rownames(constrast_fit),
+  x = "coefficients",
+  y = "p.value",
+  title = "Resilient vs Reference",
+  FCcutoff = 0.25,
+  labSize = 6
+)
 
 
-for(metabolite in selected_metabolites) {
-  plot_data <- merged_df[, c("ID", metabolite, "LDL")]
-  p <- ggplot(plot_data, aes_string(x=metabolite, y="LDL")) +
-    geom_point() +
-    geom_smooth(method="lm", se=FALSE) +
-    ggtitle(paste("Dot Plot of", metabolite, "vs LDL"))
-  print(p)
-  
-  correlation <- cor.test(plot_data[[metabolite]], plot_data[["LDL"]])
-  cat("Correlation between", metabolite, "and LDL is:", correlation$estimate, "\n")
-  cat("P-value is:", correlation$p.value, "\n\n")
-}
+ggsave("resilient_reference_volcano.png", plot = p, width = 12, height = 8, dpi = 300)
+
+# MA Plot
+glMDPlot(constrast_fit,
+         counts = lm_df,
+         coef=1, 
+         main= "Resilient v.s. Reference",
+         groups = filtered_graph_df$consensus_class,
+         html="resilient_reference_ma_plot.html")
+
+
 ```
+
+
 
 #### CyTOF
 
@@ -943,11 +1429,31 @@ cytof_df = data.frame(exp) %>%
 
 cytof_patient_df = score_df %>%
   select(ID, consensus_class) %>%
-  inner_join(cytof_df, by=c('ID'='primary'))
+  inner_join(cytof_df, by=c('ID'='primary')) %>%
+  select(-colname)
 
-bioheart_mae[['CyTOF']]
+design = model.matrix(~ consensus_class, cytof_patient_df)
+
+lm_df = cytof_patient_df %>%
+  select(-c(ID, consensus_class, age, smurfs, cacs, cacs_pct, gensini)) %>%
+  t()
+
+fit = lmFit(lm_df, design)
+fit = eBayes(fit)
+topTable(fit)
+
+
+
+CM = makeContrasts(consensus_classresilient = consensus_classresilient, levels = design)
+#CM = makeContrasts(consensus_classcompare = consensus_classsusceptible - consensus_classresilient, levels = design)
+#CM = makeContrasts(consensus_classsusceptible = consensus_classsusceptible, levels = design)
+constrast_fit = contrasts.fit(fit, contrast = CM)
+constrast_fit = eBayes(constrast_fit)
+topTable(constrast_fit)
+
 
 ```
+
 
 #### Targeted Analysis
 
@@ -1303,6 +1809,8 @@ results
 ```
 
 
+## Individual Variable Model of Resilience
+
 ```{r}
 # Changing Code
 
@@ -1326,7 +1834,6 @@ df1 = dat_FRS %>%
   mutate(
     studres_ldl = studentised_residuals(cacs_pct, LDL)
   )
-
 
 ```
 
@@ -1354,64 +1861,17 @@ df1 = df1 %>%
 df1$stud_class = df1$consensus_class
 score_df = df1
 
-# Now run all the individual analysis of each metabolites
-```
-
-
-### Score Binning (Alternative Approach)
-
-```{r}
-colnames(score_df)
-score_df = score_df %>%
-  mutate(ln_cacs = log(cacs+1))
-
-# Assuming score_df is your dataset and ascvd_10y_frs is your risk score column.
-
-# 1. Bin subjects into 10 bins by ascvd_10y_frs risk score
-# Define the range for the risk score to be binned
-bin_range = seq(min(score_df$ascvd_10y_frs), max(score_df$ascvd_10y_frs), length.out = 11)
-score_df$bin = cut(score_df$ascvd_10y_frs, breaks = bin_range, include.lowest = TRUE, labels = FALSE)
-
-# 2. Calculate z-score for cacs score within each bin
-score_df = score_df %>%
-  group_by(bin) %>%
-  mutate(mean_cacs = mean(ln_cacs, na.rm = TRUE),
-         sd_cacs = sd(ln_cacs, na.rm = TRUE),
-         z_score = (ln_cacs - mean_cacs) / sd_cacs) %>%
-  ungroup()
-
-# 3. Create consensus_class factor column
-score_df$consensus_class = case_when(
-  score_df$z_score < -1 ~ "resilient",
-  score_df$z_score > 1 ~ "susceptible",
-  abs(score_df$z_score) <= 0.5 ~ "reference",
-  TRUE ~ "ignore"
-)
-
-# Convert to factor for plotting purposes, setting 'reference' as the reference level
-score_df$consensus_class = factor(score_df$consensus_class, levels = c("reference", "resilient", "susceptible", "ignore"))
-
-# 4. Graph cacs against ascvd_10y_frs risk score
-ggplot(score_df, aes(x = ascvd_10y_frs, y = ln_cacs, color = consensus_class)) +
-  geom_point() +
-  geom_vline(xintercept = bin_range, linetype = "dashed", color = "red") +
-  scale_color_manual(values = c("resilient" = "green", "reference" = "blue", "susceptible" = "red", "ignore" = "grey50")) +
-  theme_bw() +
-  labs(title = "ln(CACS+1) vs ASCVD 10y FRS Risk Score", x = "ASCVD 10y FRS Risk Score", y = "ln(CACS+1)", color = "Consensus Class")
-
-table(score_df$consensus_class)
-
 ```
 
 ```{r}
-ggplot(score_df) +
-  aes(y=z_score, x=ascvd_10y_frs, color = consensus_class) +
-  geom_point() +
+df1 %>%
+  ggplot(aes(x = LDL, y = cacs_pct)) +
+  geom_point(aes(color = consensus_class)) +
+  geom_smooth(formula = y ~ x - 1, method = 'lm', se = FALSE) +
   theme_bw() +
-  labs(title = "ln(CACS+1) Z-Score vs ASCVD 10y FRS Risk Score", x = "ASCVD 10y FRS Risk Score", y = "Z-Score", color = "Consensus Class")
+  labs(title = paste("CACS vs non-HDL Cholesterol"),
+       x = "non-HDL Cholesterol", y = "CACS (%tile)")
 
 ```
-
-
 
 
