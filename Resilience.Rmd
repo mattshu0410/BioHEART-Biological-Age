@@ -907,9 +907,9 @@ score_df %>%
 ```{r}
 
 score_df$consensus_class = case_when(
-  score_df$cacs_riskscorecond_pct < 0.21 ~ "resilient",
-  score_df$cacs_riskscorecond_pct > 0.79 ~ "susceptible",
-  ((score_df$cacs_riskscorecond_pct > 0.42) & (score_df$cacs_riskscorecond_pct < 0.58))  ~ "reference",
+  score_df$cacs_riskscorecond_pct < 0.20 ~ "resilient",
+  score_df$cacs_riskscorecond_pct > 0.80 ~ "susceptible",
+  ((score_df$cacs_riskscorecond_pct > 0.40) & (score_df$cacs_riskscorecond_pct < 0.60))  ~ "reference",
   TRUE ~ "ignore"
 )
 
@@ -1082,8 +1082,8 @@ efit = eBayes(fit)
 topTable(efit)
 
 # Contrasts
-#CM = makeContrasts(consensus_classresilient = consensus_classresilient, levels = design)
-CM = makeContrasts(consensus_classcomparison = consensus_classsusceptible - consensus_classresilient, levels = design)
+CM = makeContrasts(consensus_classresilient = consensus_classresilient, levels = design)
+#CM = makeContrasts(consensus_classcomparison = consensus_classsusceptible - consensus_classresilient, levels = design)
 #CM = makeContrasts(consensus_classsusceptible = consensus_classsusceptible, levels = design)
 constrast_fit = contrasts.fit(efit, contrast = CM)
 constrast_fit = eBayes(constrast_fit)
@@ -1282,6 +1282,19 @@ topTable(constrast_fit, n=50)
 
 ```
 
+```{r, warning=FALSE}
+
+# Contrasts
+#CM = makeContrasts(consensus_classresilient = consensus_classresilient, levels = design)
+#CM = makeContrasts(consensus_classcompare = consensus_classsusceptible - consensus_classresilient, levels = design)
+CM = makeContrasts(consensus_classsusceptible = consensus_classsusceptible, levels = design)
+constrast_fit = contrasts.fit(efit, contrast = CM)
+constrast_fit = eBayes(constrast_fit)
+
+topTable(constrast_fit, n=50)
+
+```
+
 Here we dive deeper into some specific lipid groups. However, we've been told at this point that the elevation of Ceramides / Triglycerides is unlikely to be a marker of resilience and more likely to be a product of large risk score patients selected.
 
 ```{r, warning=FALSE}
@@ -1352,12 +1365,12 @@ fit = lmFit(lm_df, design)
 fit = eBayes(fit)
 topTable(fit)
 
-#CM = makeContrasts(consensus_classresilient = consensus_classresilient, levels = design)
-CM = makeContrasts(consensus_classcompare = consensus_classsusceptible - consensus_classresilient, levels = design)
+CM = makeContrasts(consensus_classresilient = consensus_classresilient, levels = design)
+#CM = makeContrasts(consensus_classcompare = consensus_classsusceptible - consensus_classresilient, levels = design)
 #CM = makeContrasts(consensus_classsusceptible = consensus_classsusceptible, levels = design)
 constrast_fit = contrasts.fit(fit, contrast = CM)
 constrast_fit = eBayes(constrast_fit)
-topTable(constrast_fit)
+topTable(constrast_fit, n=500)
 
 table(score_df$consensus_class)
 ```
