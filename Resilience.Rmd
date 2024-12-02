@@ -18,7 +18,7 @@ vignette: >
 ```{r setup, include=FALSE, message=FALSE, error=FALSE, warning=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
-
+  
 ```{r, results='hide', warning=FALSE, message=FALSE}
 library(tidyverse)
 library(dplyr)
@@ -45,12 +45,31 @@ library(RiskScorescvd)
 
 ```{r, results='hide', warning=FALSE, message=FALSE}
 load("MultiAssayExperiment_20220816.RData")
+
+
+data_folder = "M:/Github-Version-Control-Projects/BioHEART-Summer-Project/Data"
+BioHRT_dat = readxl::read_excel(file.path(data_folder,
+                                         "DL4_20230831-BL_Imaging-Omics-20240116_SHU.xlsx"), "nolabel")
 load("FRS_data.RData")
 ```
 
 ```{r}
-head(dat_FRS)
+BioHRT_dat  %>% filter(disc_1000 == 1) %>%
+  filter(is.na(tc) | is.na(hdl)) %>%
+  select(record_id, tc, hdl)
 
+pheno_df %>%
+  filter(is.na(tc) | is.na(hdl)) %>%
+  select(record_id, tc, hdl) %>%
+  pull(record_id)
+
+BioHRT_dat %>% filter(disc_1000 == 1)
+```
+
+```{r}
+head(BioHRT_dat)
+BioHRT_dat = BioHRT_dat %>%
+  rename(gender = sex) 
 ```
 
 
@@ -227,13 +246,16 @@ Important Recoding Decisions
 
 ```{r}
 
-pheno_df = dat_FRS %>%
+pheno_df = BioHRT_dat %>%
+  filter(disc_1000 == 1) %>%
   # remove where gender or cac or cacs_pct not recorded
   drop_na(gender, cacs, cacs_pct) %>%
+  # tc and hdl non-zero
+  filter(!is.na(tc) | !is.na(hdl)) %>%
   # missing value encoded as .
   filter(cacs_pct != ".") %>%
   # limits of ascvd limited between 30 and 74
-  filter((age<=79) & (age>=20)) %>%
+  #filter((age<=79) & (age>=20)) %>%
   mutate(
     # refactor gender
     gender = case_when(
@@ -241,8 +263,8 @@ pheno_df = dat_FRS %>%
       gender==2 ~ 'female'
       ),
     # convert from mmol/L to mg/dL
-    HDL_mgdl = HDL*38.67,
-    Chol_mgdl = Chol*38.67,
+    HDL_mgdl = hdl*38.67,
+    Chol_mgdl = tc*38.67,
     # new variable presence or absence of blood pressure meds
     bp_med = case_when(
       ace_arb == 1 ~ 1,
@@ -308,12 +330,12 @@ pheno_df = pheno_df %>%
     # MESA CHD w/ CAC
     chd_10y_mesa_cac = chd_10y_mesa_cac(mesa_eth, gender, age, Chol_mgdl, HDL_mgdl,lipid_med, sbp, bp_med, curr_smok, cvhx_dm, fh_ihd, cacs),
     # SCORE2 <= 70 year olds
-    SCORE2_10yr = SCORE2_10yr(gender, age, curr_smok, sbp, cvhx_dm, Chol, HDL),
+    SCORE2_10yr = SCORE2_10yr(gender, age, curr_smok, sbp, cvhx_dm, tc, hdl),
     # SCORE2-OP > 70 year olds
-    SCORE2OP_10yr= SCORE2OP_10yr(gender, age, curr_smok, sbp, cvhx_dm, Chol, HDL),
+    SCORE2OP_10yr= SCORE2OP_10yr(gender, age, curr_smok, sbp, cvhx_dm, tc, hdl),
     # New Package
     # SCORE2 <= 70 year olds
-    SCORE2_new = SCORE2(age, gender, curr_smok, sbp, cvhx_dm, Chol, HDL, FALSE),
+    SCORE2_new = SCORE2(Risk.region = "Low", age, gender, curr_smok, sbp, cvhx_dm, tc, hdl, FALSE),
     
     ) %>%
   mutate(
@@ -325,11 +347,245 @@ pheno_df = pheno_df %>%
   )
 
 score_df = pheno_df %>%
-  dplyr::select(ID, cacs, cacs_pct, ascvd_10y_frs, ascvd_10y_accaha, chd_10y_mesa, SCORE2, SCORE2_new)
+  dplyr::select(record_id, cacs, cacs_pct, ascvd_10y_frs, ascvd_10y_accaha, chd_10y_mesa, SCORE2, SCORE2_new)
 # Picked MESA without CAC since CAC will be the y-axis when calculating residuals
 # 112 missing values out of range but no particular pattern in its distribution
 
+
+# For the Paper
+# ASCVD
+BioHRT_dat %>%
+  filter(disc_1000 == 1) %>%
+  mutate(Chol_mgdl = tc*38.67) %>%
+  filter(Chol_mgdl < 130 | Chol_mgdl > 320)
+
+BioHRT_dat %>%
+  filter(disc_1000 == 1) %>%
+  filter(age < 20 | age > 79)
+
+BioHRT_dat %>%
+  filter(disc_1000 == 1) %>%
+  mutate(HDL_mgdl = hdl*38.67) %>%
+  filter(HDL_mgdl < 20 | HDL_mgdl > 100)
+
+BioHRT_dat %>%
+  filter(disc_1000 == 1) %>%
+  filter(sbp < 90 | sbp > 200)
+
+# FRS
+BioHRT_dat %>%
+  filter(disc_1000 == 1) %>%
+  filter(age <= 30)
+
+BioHRT_dat %>%
+  filter(disc_1000 == 1) %>%
+  filter(disc_1000 == 1)
+
+BioHRT_dat %>%
+  filter(disc_1000 == 1) %>%
+  filter(is.na(ascvd_10y_accaha)) %>%
+  select(gender, age, HDL_mgdl, Chol_mgdl, sbp, bp_med, curr_smok, cvhx_dm)
+
+
 ```
+
+Just ASCVD
+
+```{r}
+
+pheno_df = BioHRT_dat %>%
+  filter(disc_1000 == 1) %>%
+  # remove where gender or cac or cacs_pct not recorded
+  drop_na(gender, cacs, cacs_pct) %>%
+  # tc and hdl non-zero
+  filter(!is.na(tc) | !is.na(hdl)) %>%
+  # missing value encoded as .
+  filter(cacs_pct != ".") %>%
+  # limits of ascvd limited between 30 and 74
+  #filter((age<=79) & (age>=20)) %>%
+  mutate(
+    # refactor gender
+    gender = case_when(
+      gender==1 ~ 'male',
+      gender==2 ~ 'female'
+      ),
+    # convert from mmol/L to mg/dL
+    HDL_mgdl = hdl*38.67,
+    Chol_mgdl = tc*38.67,
+    # new variable presence or absence of blood pressure meds
+    bp_med = case_when(
+      ace_arb == 1 ~ 1,
+      bblocker == 1 ~ 1,
+      diuretic == 1 ~ 1,
+      ccb == 1 ~ 1,
+      TRUE ~ 0
+    ),
+    # new variable presence or absence of lipid lowering meds
+    lipid_med = case_when(
+      statin == 1 ~ 1,
+      ezetimibe == 1 ~ 1,
+      fibrate == 1 ~ 1,
+      niacin == 1 ~ 1,
+      babr == 1 ~ 1,
+      plant_sterol == 1 ~ 1,
+      lipid_lowering_unknown == 1 ~ 1,
+      TRUE ~ 0
+    ),
+    # assume no history of IHD if NA
+    fh_ihd = case_when(
+      fh_ihd == 1 ~ 1,
+      fh_ihd == 0 ~ 0,
+      is.na(fh_ihd) ~ 0
+    ),
+    # CACS as number
+    cacs = as.numeric(cacs),
+    cacs_pct = as.numeric(cacs_pct),
+    # ACCAHA Ethnicity
+    accaha_eth = case_when(
+      ethcat == 1 ~ 'white',
+      ethcat == 4 ~ 'aa',
+      TRUE ~ 'other'
+    ),
+    # Unresolved: MESA only contains 4 ethnicity categories, what do we do with other?
+    mesa_eth = case_when(
+      ethcat == 1 ~ 'white',
+      ethcat == 2 ~ 'aa',
+      ethcat == 3 ~ 'white', # contentious Polynesian
+      ethcat == 4 ~ 'aa',
+      ethcat == 5 ~ 'chinese',
+      ethcat == 7 ~ 'white',
+      ethcat == 8 ~ 'hispanic',
+      ethcat == 9 ~ 'white', # contentious mixed/Other
+      TRUE ~ 'white' # if NA assume white
+    ),
+    
+  )
+
+# pheno_df = pheno_df %>%
+#   rowwise() %>%
+#   mutate(
+# 
+#     # ASCVD (Pooled Cohort Equations - USA) w/ Requirements
+#     # 20 < age < 79 
+#     # 130 < totchol < 320
+#     # 20 < hdl < 100
+#     # 90 < sbp < 200
+#     ascvd_10y_accaha = ascvd_10y_accaha(accaha_eth, gender, age, Chol_mgdl, HDL_mgdl, sbp, bp_med, curr_smok, cvhx_dm),
+#     )
+
+pheno_df = pheno_df %>%
+  rowwise() %>%
+  mutate(
+    # FRS Score
+    ascvd_10y_frs = ascvd_10y_frs(gender, age, HDL_mgdl, Chol_mgdl, sbp, bp_med, curr_smok, cvhx_dm),
+  )
+
+score_df = pheno_df %>%
+  dplyr::select(record_id, cacs, cacs_pct, ascvd_10y_frs)
+# Picked MESA without CAC since CAC will be the y-axis when calculating residuals
+# 112 missing values out of range but no particular pattern in its distribution
+
+
+# Drop all NA across all scores
+score_df = score_df %>% drop_na(ascvd_10y_frs)
+
+```
+
+Missing Value Analysis
+
+```{r}
+
+
+missing_score_record_id = pheno_df %>%
+  filter(is.na(ascvd_10y_frs) | is.na(ascvd_10y_accaha)) %>%
+  pull(record_id)
+
+pheno_df %>% filter(record_id == 1209) %>% select(gender, age, HDL_mgdl, Chol_mgdl, sbp, bp_med, curr_smok, cvhx_dm)
+
+pheno_df %>%
+  filter(
+    !(age > 79 | Chol_mgdl < 130 | Chol_mgdl > 320 | HDL_mgdl < 20 | HDL_mgdl > 100 | sbp < 90) & 
+    !(age < 30 | age > 74)
+  )
+
+# Number of participants removed due to age > 79
+removed_age_ascvd <- pheno_df %>%
+  filter(age > 79)
+cat("Removed due to age > 79 (ASCVD):", nrow(removed_age_ascvd), "\n")
+
+# Number of participants removed due to total cholesterol (Chol_mgdl < 130 or Chol_mgdl > 320)
+removed_chol <- pheno_df %>%
+  filter(Chol_mgdl < 130 | Chol_mgdl > 320)
+cat("Removed due to total cholesterol (Chol_mgdl < 130 or > 320):", nrow(removed_chol), "\n")
+
+# Number of participants removed due to HDL_mgdl < 20 or HDL_mgdl > 100
+removed_hdl <- pheno_df %>%
+  filter(HDL_mgdl < 20 | HDL_mgdl > 100)
+cat("Removed due to HDL_mgdl < 20 or > 100:", nrow(removed_hdl), "\n")
+
+# Number of participants removed due to sbp < 90
+removed_sbp <- pheno_df %>%
+  filter(sbp < 90)
+cat("Removed due to sbp < 90:", nrow(removed_sbp), "\n")
+
+# Number of participants removed due to age < 30 (FRS)
+removed_age_frs_under_30 <- pheno_df %>%
+  filter(age < 30)
+cat("Removed due to age < 30 (FRS):", nrow(removed_age_frs_under_30), "\n")
+
+# Number of participants removed due to age > 74 (FRS)
+removed_age_frs_above_74 <- pheno_df %>%
+  filter(age > 74)
+cat("Removed due to age > 74 (FRS):", nrow(removed_age_frs_above_74), "\n")
+
+# Check overlap: Participants removed from both ASCVD and FRS due to exclusion criteria
+overlap <- pheno_df %>%
+  filter(
+    (age > 79 | Chol_mgdl < 130 | Chol_mgdl > 320 | HDL_mgdl < 20 | HDL_mgdl > 100 | sbp < 90 | age < 30 | age > 74)
+  ) %>% pull(record_id)
+cat("Overlap of participants removed due to both ASCVD and FRS criteria:", nrow(overlap), "\n")
+
+
+setdiff(missing_score_record_id, overlap)
+```
+```{r}
+cohort = pheno_df %>%
+  mutate(
+    removed_age_ascvd = ifelse(is.na(age) | age > 79, TRUE, FALSE),
+    removed_chol = ifelse(is.na(Chol_mgdl) | Chol_mgdl < 130 | Chol_mgdl > 320, TRUE, FALSE),
+    removed_hdl = ifelse(is.na(HDL_mgdl) | HDL_mgdl < 20 | HDL_mgdl > 100, TRUE, FALSE),
+    removed_sbp = ifelse(is.na(sbp) | sbp < 90, TRUE, FALSE),
+    removed_age_frs_under_30 = ifelse(is.na(age) | age < 30, TRUE, FALSE),
+    removed_age_frs_above_74 = ifelse(is.na(age) | age > 74, TRUE, FALSE)
+  ) %>%
+  select(age, Chol_mgdl, HDL_mgdl, sbp, record_id, removed_age_ascvd, removed_chol, removed_hdl, removed_sbp, removed_age_frs_under_30, removed_age_frs_above_74)
+  # filter(
+  #   !removed_age_ascvd &
+  #   !removed_chol &
+  #   !removed_hdl &
+  #   !removed_sbp &
+  #   !removed_age_frs_under_30 &
+  #   !removed_age_frs_above_74
+  # )
+
+write_csv(cohort, "M:\\Github-Version-Control-Projects\\BioHEART-Biological-Age\\cohort.csv")
+```
+
+### Cluster Analysis
+
+```{r}
+hist()
+tdf = score_df %>%
+  drop_na(chd_10y_mesa) %>%
+  mutate(ordernorm_chd_10y_mesa = orderNorm(chd_10y_mesa)$x.t) %>%
+  mutate(ordernorm_cacs = orderNorm(cacs)$x.t)
+
+hist(tdf$ordernorm_cacs) 
+
+```
+
+
+
 
 After calculation of the risk scores, there appears to be some missing values. On further inspection of the ASCVD 10YR ACCAHA score calculator it appears that the total cholesterol value needs to be above 130 mg/dL for the score calculator to work (limited by the cohort that this risk score was trained on).
 
@@ -360,7 +616,7 @@ pheno_df %>%
     )
   ) %>%
   filter(na == TRUE) %>%
-  select(ID, gender, smurfs, ascvd_10y_frs, chd_10y_mesa, SCORE2, ethcat, cacs, cacs_pct) %>%
+  select(record_id, gender, smurfs, ascvd_10y_frs, chd_10y_mesa, SCORE2, ethcat, cacs, cacs_pct) %>%
   ggplot() + 
   aes(x = ascvd_10y_frs, y = log(cacs+1)) +
   geom_point() +
@@ -370,8 +626,21 @@ pheno_df %>%
 score_df %>%
   vis_miss()
 
+
+
 # Drop all NA across all scores
-score_df = score_df %>% drop_na()
+score_df = score_df %>% drop_na(ascvd_10y_frs, ascvd_10y_accaha, chd_10y_mesa, SCORE2_new)
+
+```
+
+Score Correlation
+
+```{r}
+# with the value labels
+score_df %>%
+  select(ascvd_10y_frs, ascvd_10y_accaha, chd_10y_mesa, SCORE2_new) %>%
+  cor() %>%
+  corrplot::corrplot(method = "number", type = "upper", tl.col = "black", tl.srt = 45)
 
 
 ```
@@ -431,7 +700,192 @@ score_df %>%
 
 ### Calculating Zero-Inflated Regression Percentiles by Risk Score
 
+#### Transformation and Standardisation
+
+The following alternative is from Stuart's suggested method to standardise risk scores and take an average where possible.
+
+````{r}
+
+library(caret)
+
+replace_non_na <- function(A, B) {
+  # Find the indices of non-NA values in A
+  non_na_indices <- which(!is.na(A))
+  
+  # Ensure B has enough values to replace non-NA values in A
+  if (length(B) < length(non_na_indices)) {
+    stop("Vector B does not have enough elements to replace all non-NA values in A")
+  }
+  
+  # Replace non-NA values in A with values from B
+  A[non_na_indices] <- B[seq_along(non_na_indices)]
+  
+  # Return the modified A
+  return(A)
+}
+
+min_max_normalize <- function(x) {
+  return((x - min(x, na.rm = TRUE)) / (max(x, na.rm = TRUE) - min(x, na.rm = TRUE)))
+}
+
+standardise <- function(x) {
+  return((x - mean(x, na.rm = TRUE)) / sd(x, na.rm = TRUE))
+
+}
+
+# Normalizing the scores with Box-Cox Transformation
+bc_trans = BoxCoxTrans(score_df$ascvd_10y_frs, na.rm=TRUE)
+score_df$bc_ascvd_10y_frs = standardise(replace_non_na(score_df$ascvd_10y_frs, predict(bc_trans, score_df$ascvd_10y_frs)))
+bc_trans = BoxCoxTrans(score_df$ascvd_10y_accaha, na.rm=TRUE)
+score_df$bc_ascvd_10y_accaha = standardise(replace_non_na(score_df$ascvd_10y_accaha, predict(bc_trans, score_df$ascvd_10y_accaha)))
+bc_trans = BoxCoxTrans(score_df$chd_10y_mesa, na.rm=TRUE)
+score_df$bc_chd_10y_mesa = standardise(replace_non_na(score_df$chd_10y_mesa, predict(bc_trans, score_df$chd_10y_mesa)))
+bc_trans = BoxCoxTrans(score_df$SCORE2_new, na.rm=TRUE)
+score_df$bc_SCORE2_new = standardise(replace_non_na(score_df$SCORE2_new, predict(bc_trans, score_df$SCORE2_new)))
+
+hist(score_df$bc_ascvd_10y_frs)
+hist(score_df$bc_ascvd_10y_accaha)
+hist(score_df$bc_chd_10y_mesa)
+hist(score_df$bc_SCORE2_new)
+
+# Applying normalization to each score column
+score_df <- score_df %>%
+  rowwise() %>%
+  mutate(
+    average_bc_score = mean(c_across(starts_with("bc_")), na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+
+score_df %>%
+  # Select only columns starting with ordernorm
+  select(record_id, ascvd_10y_frs, ascvd_10y_accaha, chd_10y_mesa, SCORE2_new) %>%
+  filter(record_id < 100) %>%
+  pivot_longer(
+    cols = c(ascvd_10y_frs, ascvd_10y_accaha, chd_10y_mesa, SCORE2_new),
+    names_to = "score",
+    values_to = "value"
+  ) %>%
+  ggplot(aes(y = value, x = as.factor(record_id), color = score)) +
+  geom_point() +
+  theme_bw()
+
+
+score_df %>%
+  # Select only columns starting with ordernorm
+  select(record_id, starts_with("bc_")) %>%
+  filter(record_id < 100) %>%
+  pivot_longer(
+    cols = starts_with("bc_"),
+    names_to = "score",
+    values_to = "value"
+  ) %>%
+  ggplot(aes(y = value, x = as.factor(record_id), color = score)) +
+  geom_point()
+
+score_df %>%
+  # Select only columns starting with ordernorm
+  select(record_id, starts_with("bc_")) %>%
+  #filter(record_id < 100) %>%
+  pivot_longer(
+    cols = starts_with("bc_"),
+    names_to = "score",
+    values_to = "value"
+  ) %>%
+  ggplot(aes(x = value, color = score)) +
+  geom_freqpoly()
+
+score_df %>% vis_miss()
+
+# Normalizing the scores with orderNorm
+score_df$ordernorm_ascvd_10y_frs = standardise(orderNorm(score_df$ascvd_10y_frs)$x.t)
+score_df$ordernorm_ascvd_10y_accaha = standardise(orderNorm(score_df$ascvd_10y_accaha)$x.t)
+score_df$ordernorm_chd_10y_mesa = standardise(orderNorm(score_df$chd_10y_mesa)$x.t)
+score_df$ordernorm_SCORE2 = standardise(orderNorm(score_df$SCORE2_new)$x.t)
+
+hist(score_df$ordernorm_ascvd_10y_frs)
+hist(score_df$ordernorm_ascvd_10y_accaha)
+hist(score_df$ordernorm_chd_10y_mesa)
+hist(score_df$ordernorm_SCORE2)
+
+
+
+# Normalizing the scores with just max min
+score_df$ordernorm_ascvd_10y_frs = min_max_normalize(score_df$ascvd_10y_frs)
+score_df$ordernorm_ascvd_10y_accaha = min_max_normalize(score_df$ascvd_10y_accaha)
+score_df$ordernorm_chd_10y_mesa = min_max_normalize(score_df$chd_10y_mesa)
+score_df$ordernorm_SCORE2 = min_max_normalize(score_df$SCORE2_new)
+
+
+# Applying normalization to each score column
+score_df <- score_df %>%
+  rowwise() %>%
+  mutate(
+    average_norm_score = mean(c_across(starts_with("ordernorm_")), na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+score_df %>%
+  # Select only columns starting with ordernorm
+  select(record_id, starts_with("ordernorm_")) %>%
+  filter(record_id < 100) %>%
+  pivot_longer(
+    cols = starts_with("ordernorm_"),
+    names_to = "score",
+    values_to = "value"
+  ) %>%
+  ggplot(aes(y = value, x = as.factor(record_id), color = score)) +
+  geom_point() + 
+  theme_bw()
+
+
+score_df %>%
+  # Select only columns starting with ordernorm
+  select(record_id, starts_with("ordernorm_"), average_norm_score) %>%
+  #filter(record_id < 100) %>%
+  pivot_longer(
+    cols = c(starts_with("ordernorm_"), average_norm_score),
+    names_to = "score",
+    values_to = "value"
+  ) %>%
+  ggplot(aes(x = value, color = score)) +
+  geom_freqpoly() +
+  theme_bw()
+  
+```
+
 The following code is from Avanti & Sina.
+
+
+Fits on Combined Average Normalised Score
+```{r}
+
+# Fits Zero Inflated model w/ only FRS Score
+
+# 1 dropped because missing either CACS or average_norm_score need to investigate
+score_df = score_df %>% drop_na(cacs, average_norm_score)
+zeroinflmodel = zeroinfl(100*cacs ~ average_norm_score | average_norm_score, data = score_df, dist = "negbin")
+summary(zeroinflmodel)
+
+
+```
+
+Fits on Single Score Normalised
+
+```{r}
+
+score_df = score_df %>% mutate(
+    ordernorm_ascvd_10y_frs = orderNorm(ascvd_10y_frs)$x.t
+)
+
+
+# Fits Zero Inflated model w/ only FRS Score
+
+zeroinflmodel = zeroinfl(100*cacs ~ ordernorm_ascvd_10y_frs | ordernorm_ascvd_10y_frs, data = score_df, dist = "negbin")
+summary(zeroinflmodel)
+```
+
+Fits on Separate Scores Normalised
 
 ```{r}
 # The following fits all the risk scores to a normal distribution, effectively meaning you care more about the ranks of the risk scores rather than the values. Also means you pay more emphasis to very high risk or very low risk.
@@ -447,13 +901,6 @@ score_df = score_df %>% mutate(
 ```
 
 ```{r}
-# Fits Zero Inflated model w/ only FRS Score
-
-zeroinflmodel = zeroinfl(100*cacs ~ ordernorm_ascvd_10y_frs | ordernorm_ascvd_10y_frs, data = score_df, dist = "negbin")
-summary(zeroinflmodel)
-```
-
-```{r}
 # Fits Zero Inflated model w/ all scores
 
 zeroinflmodel = zeroinfl(100*cacs ~ ordernorm_ascvd_10y_frs + ordernorm_ascvd_10y_accaha + ordernorm_chd_10y_mesa + ordernorm_SCORE2 | ordernorm_ascvd_10y_frs + ordernorm_ascvd_10y_accaha + ordernorm_chd_10y_mesa + ordernorm_SCORE2, data = score_df, dist = "negbin")
@@ -465,6 +912,7 @@ summary(zeroinflmodel)
 score_df = score_df %>% 
   mutate(
     # Predicted counts from the negative binomial part of the zero-inflated model
+    # Based on the risk scores of a person, what should be their CACS
     cacs_riskscorecond_countpred = predict(zeroinflmodel, data=score_df, type="count") / 100,
     
     # Predicted probability of a zero result from the zero-inflated part of the model
@@ -476,7 +924,7 @@ score_df = score_df %>%
   mutate(
     #The distribution is discrete, so for a given CACS value, I
     # will set the percentile to the mean of p(obs) <= CACS
-    # and p(obs) < CACS
+    # and p(obs) < CACS i.e. add the two and divide by 2
     cacs_riskscorecond_pct = case_when(
       #when CACS > 0, p(obs) <= CACS and p(obs) < CACS both
       # include the probability that p(obs)==0 
@@ -490,8 +938,7 @@ score_df = score_df %>%
       # because we are drawing from the zero inflation, or
       # because we are drawing from the counts model and the
       # counts model happened to generate a 0
-      cacs == 0 ~ 0.5 * (cacs_riskscorecond_zeroprob +
-        pnbinom(q = 100 * score_df$cacs, size = zeroinflmodel$theta, mu = 100 * cacs_riskscorecond_countpred))
+      cacs == 0 ~ 0.5 * (cacs_riskscorecond_zeroprob + (1-cacs_riskscorecond_zeroprob)*pnbinom(q = 100 * score_df$cacs, size = zeroinflmodel$theta, mu = 100 * cacs_riskscorecond_countpred))
     )
   )
 
@@ -540,6 +987,7 @@ grid.arrange(
 
 
 ```
+
 ### Calculating Zero-Inflated Regression Percentiles by Individual Variables
 
 ```{r}
@@ -915,17 +1363,13 @@ score_df$consensus_class = case_when(
 
 score_df %>% select(consensus_class, cacs_riskscorecond_pct)
 
-ggplot(score_df, aes(x = ascvd_10y_frs, y = cacs, color = consensus_class)) +
+ggplot(score_df, aes(x = average_norm_score, y = cacs, color = consensus_class)) +
   geom_point() +
   scale_color_manual(values = c("resilient" = "green", "reference" = "blue", "susceptible" = "red", "ignore" = "grey50")) +
   theme_bw() +
-  labs(title = "CACS vs ASCVD 10y FRS Risk Score", x = "ASCVD 10y FRS Risk Score", y = "CACS", color = "Consensus Class")
+  labs(title = "CACS vs Average Normalised Score", x = "Average Normalised Score", y = "CACS", color = "Consensus Class")
 
-ggplot(score_df, aes(x = ascvd_10y_frs, y = ln_cacs, color = consensus_class)) +
-  geom_point() +
-  scale_color_manual(values = c("resilient" = "green", "reference" = "blue", "susceptible" = "red", "ignore" = "grey50")) +
-  theme_bw() +
-  labs(title = "ln(CACS+1) vs ASCVD 10y FRS Risk Score", x = "ASCVD 10y FRS Risk Score", y = "ln(CACS+1)", color = "Consensus Class")
+
 
 ggplot(score_df, aes(x = ordernorm_ascvd_10y_frs, y = cacs_riskscorecond_pct, color = consensus_class)) +
   geom_point() +
@@ -933,10 +1377,28 @@ ggplot(score_df, aes(x = ordernorm_ascvd_10y_frs, y = cacs_riskscorecond_pct, co
   theme_bw() +
   labs(title = "CACS Percentile (Risk Adjusted) vs Normalised ASCVD 10y FRS Risk Score", x = "Normalised ASCVD 10y FRS Risk Score", y = "CACS Percentile (Risk Adjusted)", color = "Consensus Class")
 
+ggplot(score_df, aes(x = average_norm_score , y = cacs_riskscorecond_pct, color = consensus_class)) +
+  geom_point() +
+  scale_color_manual(values = c("resilient" = "green", "reference" = "blue", "susceptible" = "red", "ignore" = "grey50")) +
+  theme_bw() +
+  labs(title = "CACS Percentile (Risk Adjusted) vs Average Normalised Score", x = "Average Normalised Score", y = "CACS Percentile (Risk Adjusted)", color = "Consensus Class")
+
 # Convert to factor for plotting purposes, setting 'reference' as the reference level
 score_df$consensus_class = factor(score_df$consensus_class, levels = c("reference", "resilient", "susceptible", "ignore"))
 
 table(score_df$consensus_class)
+
+# Resilient vs Other
+# score_df = score_df %>%
+#   mutate(consensus_class = case_when(
+#     consensus_class == "ignore" ~ "other",
+#     consensus_class == "reference" ~ "other",
+#     consensus_class == "susceptible" ~ "other",
+#     TRUE ~ "resilient"
+#   ))
+
+
+write.csv(score_df, "resilience.csv")
 ```
 ### Classifying by Zero-Inflated Regression Percentiles by Individual Variables
 
@@ -974,6 +1436,8 @@ df1$consensus_class = factor(score_df$consensus_class, levels = c("reference", "
 
 score_df = df1
 table(df1$consensus_class)
+
+
 ```
 
 ```{r}
@@ -988,7 +1452,6 @@ df1 %>%
 ```
 ### Comparing Classes
 
-#### Metabolomics
 
 ```{r, warning=FALSE}
 # Metabolomics
@@ -1009,13 +1472,13 @@ metab_df = data.frame(metab_exp) %>%
   #mutate(across(8:60, ~(.-min(.))/((max(.)-min(.)))))
 
 graph_df = score_df %>%
-  dplyr::select(ID, consensus_class) %>%
-  inner_join(metab_df, by=c('ID'='primary')) # %>%
+  dplyr::select(record_id, consensus_class) %>%
+  inner_join(metab_df, by=c('record_id'='primary')) # %>%
   #filter(consensus_class %in% c("resilient", "reference"))
 
 # Graph Box Plot
 graph_df %>%
-  pivot_longer(cols = -c(ID, gender, consensus_class, colname, age, smurfs, cacs, cacs_pct, gensini), names_to = "metabolite", values_to = "value") %>%
+  pivot_longer(cols = -c(record_id, gender, consensus_class, colname, age, smurfs, cacs, cacs_pct, gensini), names_to = "metabolite", values_to = "value") %>%
   ggplot() +
   aes(x = metabolite, y = value, colour = consensus_class) +
   geom_boxplot() +
@@ -1073,7 +1536,7 @@ filtered_graph_df = graph_df #%>%
   #filter(gender == 1) %>%
   #filter(age > 60) 
 lm_df = filtered_graph_df %>%
-  dplyr::select(-c(ID, consensus_class, colname, gender, age, smurfs, cacs, cacs_pct, gensini)) %>%
+  dplyr::select(-c(record_id, consensus_class, colname, gender, age, smurfs, cacs, cacs_pct, gensini)) %>%
   t()
 
 design = model.matrix(~ consensus_class, filtered_graph_df)
@@ -1082,9 +1545,9 @@ efit = eBayes(fit)
 topTable(efit)
 
 # Contrasts
-CM = makeContrasts(consensus_classresilient = consensus_classresilient, levels = design)
+#CM = makeContrasts(consensus_classresilient = consensus_classresilient, levels = design)
 #CM = makeContrasts(consensus_classcomparison = consensus_classsusceptible - consensus_classresilient, levels = design)
-#CM = makeContrasts(consensus_classsusceptible = consensus_classsusceptible, levels = design)
+CM = makeContrasts(consensus_classsusceptible = consensus_classsusceptible, levels = design)
 constrast_fit = contrasts.fit(efit, contrast = CM)
 constrast_fit = eBayes(constrast_fit)
 
@@ -1204,8 +1667,8 @@ lipid_species_df = data.frame(lipid_species_exp) %>%
   transform(cacs = as.numeric(cacs), cacs_pct = as.numeric(cacs_pct), gensini = as.numeric(gensini), primary = as.numeric(primary))
 
 graph_df = score_df %>%
-  select(ID, consensus_class) %>%
-  inner_join(lipid_species_df, by=c('ID'='primary'))
+  select(record_id, consensus_class) %>%
+  inner_join(lipid_species_df, by=c('record_id'='primary'))
 
 #score_df %>%
 #  select(ID, consensus_class) %>%
@@ -1234,14 +1697,14 @@ lipid_totals_df = data.frame(lipid_totals_exp) %>%
   transform(cacs = as.numeric(cacs), cacs_pct = as.numeric(cacs_pct), gensini = as.numeric(gensini), primary = as.numeric(primary))
 
 graph_df = score_df %>%
-  select(ID, consensus_class) %>%
-  inner_join(lipid_totals_df, by=c('ID'='primary'))
+  select(record_id, consensus_class) %>%
+  inner_join(lipid_totals_df, by=c('record_id'='primary'))
 
 score_df %>%
-  select(ID, consensus_class) %>%
-  inner_join(lipid_totals_df, by=c('ID'='primary')) %>%
+  select(record_id, consensus_class) %>%
+  inner_join(lipid_totals_df, by=c('record_id'='primary')) %>%
   filter(consensus_class %in% c("resilient", "reference")) %>%
-  pivot_longer(cols = -c(ID, consensus_class, colname, age, smurfs, cacs, cacs_pct, gensini), names_to = "lipid_total", values_to = "value") %>%
+  pivot_longer(cols = -c(record_id, consensus_class, colname, age, smurfs, cacs, cacs_pct, gensini), names_to = "lipid_total", values_to = "value") %>%
   ggplot() +
   aes(x = lipid_total, y = value, colour = consensus_class) +
   geom_boxplot() +
@@ -1257,7 +1720,7 @@ filtered_graph_df = graph_df #%>%
   #filter(gender == 1) %>%
   #filter(age > 60) 
 lm_df = filtered_graph_df %>%
-  dplyr::select(-c(ID, consensus_class, colname, age, smurfs, cacs, cacs_pct, gensini)) %>%
+  dplyr::select(-c(record_id, consensus_class, colname, age, smurfs, cacs, cacs_pct, gensini)) %>%
   t()
 
 design = model.matrix(~ consensus_class, filtered_graph_df)
@@ -1272,8 +1735,8 @@ The contrasts are `resilient` - `reference`.
 ```{r, warning=FALSE}
 
 # Contrasts
-CM = makeContrasts(consensus_classresilient = consensus_classresilient, levels = design)
-#CM = makeContrasts(consensus_classcompare = consensus_classsusceptible - consensus_classresilient, levels = design)
+#CM = makeContrasts(consensus_classresilient = consensus_classresilient, levels = design)
+CM = makeContrasts(consensus_classcompare = consensus_classresilient - consensus_classreference, levels = design)
 #CM = makeContrasts(consensus_classsusceptible = consensus_classsusceptible, levels = design)
 constrast_fit = contrasts.fit(efit, contrast = CM)
 constrast_fit = eBayes(constrast_fit)
@@ -1350,16 +1813,17 @@ prot_df = data.frame(prot_exp) %>%
 ```{r, warning=FALSE}
 
 prot_patient_df = score_df %>%
-  select(ID, consensus_class) %>%
-  inner_join(prot_df, by=c('ID'='primary'))
-
+  select(record_id, consensus_class, average_norm_score) %>%
+  # Remove outlier 1067
+  #filter(record_id != 1067) %>%
+  inner_join(prot_df, by=c('record_id'='primary'))
+setdiff(score_df$record_id, prot_df$primary)
 
 lm_df = prot_patient_df %>%
-  select(-c(ID, consensus_class, age, smurfs, cacs, cacs_pct, gensini)) %>%
+  select(-c(record_id, consensus_class, age, smurfs, cacs, cacs_pct, gensini, average_norm_score)) %>%
   t()
 
 design = model.matrix(~ consensus_class, prot_patient_df)
-
 
 fit = lmFit(lm_df, design)
 fit = eBayes(fit)
@@ -1371,9 +1835,89 @@ CM = makeContrasts(consensus_classresilient = consensus_classresilient, levels =
 constrast_fit = contrasts.fit(fit, contrast = CM)
 constrast_fit = eBayes(constrast_fit)
 topTable(constrast_fit, n=500)
-
 table(score_df$consensus_class)
+
+
+prot_patient_df %>%
+  summarise(mean(GC))
 ```
+
+```{r}
+prot_patient_df %>%
+  select(cacs_pct, signif_igs, consensus_class, average_norm_score) %>%
+  pivot_longer(names_to = "protein", values_to = "value", -c(consensus_class, cacs_pct, average_norm_score)) %>%
+  filter(consensus_class == "resilient") %>%
+  ggplot() +
+  aes(x = cacs_pct, y = value, colour = protein) +
+  geom_point() +
+  theme_bw() +
+  labs(title = "Immunoglobulins vs CACS Percentile", x = "CACS Percentile", y = "Immunoglobulins")
+
+
+signif_igs = c("IGLV7-43;IGLV7-46", "IGHM", "IGKV2-29;IGKV2-30;IGKV2D-29", "IGKV2-29;IGKV2D-29")
+
+
+prot_patient_df %>%
+  select(cacs_pct, `IGLV7-43;IGLV7-46`, consensus_class, average_norm_score) %>%
+  filter(consensus_class == "resilient") %>%
+  ggplot() +
+  aes(x = average_norm_score, y = `IGLV7-43;IGLV7-46`) +
+  geom_point() +
+  theme_bw() +
+  labs(title = "Immunoglobulins vs Average Normalised Score", x = "Average Normalised Score", y = "Immunoglobulins")
+
+prot_patient_df %>%
+  select(cacs_pct, signif_igs, consensus_class, average_norm_score) %>%
+  pivot_longer(names_to = "protein", values_to = "value", -c(consensus_class, cacs_pct, average_norm_score)) %>%
+  filter(consensus_class == "resilient") %>%
+  ggplot() +
+  aes(x = average_norm_score, y = value, color = protein) +
+  geom_point() +
+  theme_bw() +
+  labs(title = "Immunoglobulins vs Average Normalised Score", x = "Average Normalised Score", y = "Immunoglobulins")
+
+
+is_outlier <- function(x) {
+  return(x < quantile(x, 0.25) - 1.5 * IQR(x) | x > quantile(x, 0.75) + 1.5 * IQR(x))
+}
+
+prot_patient_df %>%
+  select(record_id, cacs_pct, signif_igs, consensus_class, average_norm_score) %>%
+  filter(consensus_class %in% c("resilient", "reference", "susceptible")) %>%
+  pivot_longer(names_to = "protein", values_to = "value", -c(record_id, consensus_class, cacs_pct, average_norm_score)) %>%
+  mutate(outlier = ifelse(is_outlier(value), record_id, as.numeric(NA))) %>%
+  ggplot() +
+  aes(x = consensus_class, y = value, color = consensus_class) +
+  facet_wrap(~protein)+
+  geom_boxplot(notch=TRUE) +
+  geom_text(aes(label = outlier), na.rm = TRUE, hjust = -0.3) +
+  theme_bw() +
+  labs(title = "Immunoglobulins vs Average Normalised Score", x = "Average Normalised Score", y = "Immunoglobulins")
+
+
+# with the value labels
+prot_patient_df %>%
+  select(signif_igs) %>%
+  cor() %>%
+  corrplot::corrplot(method = "number", type = "upper", tl.col = "black", tl.srt = 45)
+
+
+
+
+score_df %>%
+  select(cacs, average_norm_score, consensus_class) %>%
+  ggplot() +
+  aes(x = average_norm_score , y = log(cacs + 1), color = consensus_class) +
+  geom_point() +
+  theme_bw()
+
+```
+```{r}
+
+hist(prot_patient_df %>% filter(consensus_class == "resilient") %>% pull(`IGLV7-43;IGLV7-46`))
+```
+
+
 ```{r}
 score_df %>% 
   select(ascvd_10y_frs, ascvd_10y_accaha, chd_10y_mesa, SCORE2) %>%
@@ -1387,16 +1931,39 @@ score_df %>%
 library(EnhancedVolcano)
 p = EnhancedVolcano(
   topTable(constrast_fit, n=500),
-  lab = rownames(constrast_fit),
+  lab = rownames(topTable(constrast_fit, n=500)),
   x = "logFC",
   y = "adj.P.Val",
   title = "Resilient vs Reference",
-  FCcutoff = 0.20,
+  FCcutoff = 0.10,
   pCutoff = 0.05,
-  labSize = 6
+  labSize = 6,
+  xlim = c(-0.5,0.5),
+  ylim = c(0, 3),
+  drawConnectors = TRUE,
+  subtitle = "",
 )
 
-# Volcano Plot
+ggsave("resilient_reference_volcano.png", plot = p, width = 12, height = 8, dpi = 300)
+
+p = EnhancedVolcano(
+  topTable(constrast_fit, n=500),
+  lab = rownames(topTable(constrast_fit, n=500)),
+  x = "logFC",
+  y = "adj.P.Val",
+  title = "Susceptible vs Reference",
+  FCcutoff = 0.10,
+  pCutoff = 0.05,
+  labSize = 6,
+  xlim = c(-0.5,0.5),
+  ylim = c(0, 3),
+  drawConnectors = TRUE,
+  subtitle = "",
+)
+
+ggsave("susceptible_reference_volcano.png", plot = p, width = 12, height = 8, dpi = 300)
+
+#Volcano Plot
 library(EnhancedVolcano)
 p = EnhancedVolcano(
   constrast_fit,
@@ -1408,6 +1975,7 @@ p = EnhancedVolcano(
   labSize = 6
 )
 
+p
 
 ggsave("resilient_reference_volcano.png", plot = p, width = 12, height = 8, dpi = 300)
 
@@ -1422,7 +1990,18 @@ glMDPlot(constrast_fit,
 
 ```
 
+Get IDs of resilient SMURFless patients.
 
+```{r}
+
+export = score_df %>%
+  filter(consensus_class == "resilient") %>%
+  left_join(dat_FRS %>% select(ID, smurfs), by=c( 'record_id' = 'ID')) %>%
+  filter(smurfs == 0)
+
+write.csv(export, "resilient_smurfless.csv")
+
+```
 
 #### CyTOF
 
@@ -1441,14 +2020,14 @@ cytof_df = data.frame(exp) %>%
   drop_na
 
 cytof_patient_df = score_df %>%
-  select(ID, consensus_class) %>%
-  inner_join(cytof_df, by=c('ID'='primary')) %>%
+  select(record_id, consensus_class) %>%
+  inner_join(cytof_df, by=c('record_id'='primary')) %>%
   select(-colname)
 
 design = model.matrix(~ consensus_class, cytof_patient_df)
 
 lm_df = cytof_patient_df %>%
-  select(-c(ID, consensus_class, age, smurfs, cacs, cacs_pct, gensini)) %>%
+  select(-c(record_id, consensus_class, age, smurfs, cacs, cacs_pct, gensini)) %>%
   t()
 
 fit = lmFit(lm_df, design)
@@ -1464,6 +2043,85 @@ constrast_fit = contrasts.fit(fit, contrast = CM)
 constrast_fit = eBayes(constrast_fit)
 topTable(constrast_fit)
 
+
+```
+
+
+### Summary Table
+
+```{r}
+
+library(gtsummary)
+library(writexl)
+
+colnames(pheno_df)
+
+pheno_df = pheno_df %>%
+  mutate(gensini_bin = case_when(
+    gensini == 0 ~ 0,
+    gensini > 0 ~ 1
+  ))
+
+pheno_df = pheno_df %>%
+  merge(score_df, by="record_id")
+
+rsk_factors <- c("age","smurfs","cvhx_htn","cvhx_dm","cvhx_hcl_sr",
+              "signif_smok", "curr_smok", "anti_coag",
+              "anti_plt", "statin", "bblocker", "ace_arb",
+              "bmi", "fh_ihd", "gender")
+
+
+gt_res <- pheno_df %>%
+  dplyr::select(all_of(c("gensini_bin", rsk_factors, "smurfs", "consensus_class"))) %>%
+  mutate(SMuRFless = ifelse(smurfs == 0, 1, 0)) %>%
+  tbl_summary(by=consensus_class) %>% 
+  add_n() %>%
+  add_overall() %>%
+  add_p() %>% # test for a difference between groups
+  modify_header(label = "**Consensus Class**") # update the column header
+
+gt_res %>%
+  gtsummary::as_tibble() %>% 
+  writexl::write_xlsx(., "summary_table.xlsx")
+
+print(gt_res)
+```
+
+
+### Why are we seeing SMuRFless in the Resilient Group?
+```{r}
+test_df = pheno_df %>%
+  left_join(score_df, by="record_id") %>%
+  mutate(SMuRFless = ifelse(smurfs == 0, 1, 0)) %>%
+  mutate(weird = ifelse((consensus_class.x == "resilient") & (SMuRFless == 1), TRUE, FALSE))
+
+ggplot(test_df, aes(x = ordernorm_ascvd_10y_frs.x, y = cacs_riskscorecond_pct.x, color = consensus_class.x)) +
+  # Points for all data
+  geom_point(aes(shape = weird), size = 2) +
+  
+  # Custom shape and color for weird == TRUE
+  geom_point(data = subset(test_df, weird == TRUE), aes(x = ordernorm_ascvd_10y_frs.x, y = cacs_riskscorecond_pct.x), 
+             shape = 17, color = "orange", size = 3) +
+  
+  # Add labels for points where weird == TRUE
+  geom_text(data = subset(test_df, weird == TRUE), aes(x = ordernorm_ascvd_10y_frs.x, y = cacs_riskscorecond_pct.x, label = record_id), 
+            vjust = -1, hjust = 0.5, color = "orange") +
+  
+  # Manual color scaling for consensus_class
+  scale_color_manual(values = c("resilient" = "green", "reference" = "blue", "susceptible" = "red", "ignore" = "grey50")) +
+  
+  # Add labels, theme, and title
+  theme_bw() +
+  labs(title = "CACS Percentile (Risk Adjusted) vs Normalised ASCVD 10y FRS Risk Score", 
+       x = "Normalised ASCVD 10y FRS Risk Score", 
+       y = "CACS Percentile (Risk Adjusted)", 
+       color = "Consensus Class", shape = "Weird")
+
+pheno_df %>%
+  left_join(score_df, by="record_id") %>%
+  mutate(SMuRFless = ifelse(smurfs == 0, 1, 0)) %>%
+  filter((consensus_class.x == "resilient") & (SMuRFless == 1)) %>%
+  select(gender, age, HDL_mgdl, Chol_mgdl, sbp, bp_med, curr_smok, cvhx_dm, ascvd_10y_frs.x, ascvd_10y_accaha.x, chd_10y_mesa.x, SCORE2.x, SCORE2_new, consensus_class.x, SMuRFless)
 
 ```
 
@@ -1699,7 +2357,8 @@ topTable(constrast_fit)
 # Load the biomaRt library
 library(biomaRt)
 
-rsids = scan("rsIDs.txt", what = "character")
+#rsids = scan("rsIDs.txt", what = "character")
+rsids = scan("cd39.txt", what = "character")
 
 # Select the human SNP mart
 snpMart = useMart(biomart = "ENSEMBL_MART_SNP", dataset = "hsapiens_snp")
@@ -1734,26 +2393,37 @@ write.table(results[, c("chr_name", "chrom_start", "chrom_end", "label")],
 
 ```{r}
 genotypes = read.csv("genotypes.raw", sep='')
+mapping = read.csv("mapping.txt", header = FALSE)
+
+genotypes = genotypes %>%
+  left_join(mapping, by = c("IID" = "V2")) %>%
+  mutate(BioHEART_ID = as.numeric(sub("^BH_", "", V1)))
+
 
 snps_info = read.table("extracted_snps.bim")
 
+# results is chromosome and position of enquired snps from ENSEMBL_MART_SNP
 snp_labels = results %>%
   filter(chrom_start %in% snps_info$V4) %>%
   pull(refsnp_id)
 
 
-genotype_columns = grep("^\\._", names(genotypes), value = TRUE)
+genotype_columns = grep("chr[0-9XY]+\\.[0-9]+\\.[ACGT]\\.[ACGT]_[ACGT]", names(genotypes), value = TRUE)
 names(genotypes)[match(genotype_columns, names(genotypes))] = snp_labels
 
 snp_score_df = score_df %>%
-  inner_join(genotypes, by=c('ID'='IID')) %>%
+  inner_join(genotypes, by=c('record_id'='BioHEART_ID')) %>%
   select_if(~ !anyNA(.))
+```
+```{r}
+snp_score_df %>%
+  select(rs186021206, V1)
 ```
 
 ```{r}
 
 vis_miss(genotypes)
-
+vis_miss(snp_score_df)
 ```
 
 ```{r}
@@ -1816,10 +2486,160 @@ analyze_columns = function(df, rs_columns) {
   return(results)
 }
 
+# Resilient versus Reference
+analyze_columns = function(df, rs_columns) {
+  # Filter rows where consensus_class is "reference", "resilient", "ignore", or "susceptible"
+  df <- df %>% filter(consensus_class %in% c("resilient", "reference"))
+
+  # Drop unused levels
+  df$consensus_class <- droplevels(df$consensus_class)
+
+  results = list()
+  for (col in rs_columns) {
+    # Create a contingency table
+    contingency_table = table(df[[col]], df$consensus_class)
+    print(contingency_table)
+    # Apply Fisher's exact test
+    fisher_test = fisher.test(contingency_table, workspace = 2e6)
+    
+    # Store the results
+    results[[col]] = list(
+      summary = contingency_table,
+      fisher_test = fisher_test
+    )
+  }
+  
+  return(results)
+}
+
+# Resilient versus Reference
+analyze_columns = function(df, rs_columns) {
+  # Filter rows where consensus_class is "reference", "resilient", "ignore", or "susceptible"
+  df <- df %>% filter(consensus_class %in% c("resilient", "susceptible"))
+
+  # Drop unused levels
+  df$consensus_class <- droplevels(df$consensus_class)
+
+  results = list()
+  for (col in rs_columns) {
+    # Create a contingency table
+    contingency_table = table(df[[col]], df$consensus_class)
+    print(contingency_table)
+    # Apply Fisher's exact test
+    fisher_test = fisher.test(contingency_table, workspace = 2e6)
+    
+    # Store the results
+    results[[col]] = list(
+      summary = contingency_table,
+      fisher_test = fisher_test
+    )
+  }
+  
+  return(results)
+}
+
+
 results = analyze_columns(snp_score_df, rs_columns)
 results
 
 ```
+
+#### SNPs New
+
+```{r}
+
+#Plate ID to BioHEART Mapping
+mapping = read.csv("mapping.txt", header = FALSE)
+
+mapping_clean = mapping %>%
+  rename(c("record_id" = "V1", "IID" = "V2")) %>%
+  mutate(record_id = str_remove(record_id, "BH_")) %>%
+  mutate(record_id = str_remove(record_id, "CT_")) %>%
+  mutate(record_id = as.numeric(record_id))
+
+pheno_df = score_df %>%
+  left_join(dat_FRS %>% dplyr::select(record_id, age, gender), by = c("record_id")) %>%
+  left_join(mapping_clean, by = c("record_id")) %>%
+  dplyr::select("IID", "age", "gender", "consensus_class", "cacs_pct") %>%
+  drop_na()
+
+# Only if you wish to compare resilient to EVERYONE ELSE
+pheno_df = pheno_df %>%
+  mutate(consensus_class = case_when(
+    consensus_class == "susceptible" ~ "other",
+    consensus_class == "reference" ~ "other",
+    consensus_class == "ignore" ~ "other",
+    TRUE ~ "resilient"
+  ))
+
+write_tsv(pheno_df, "pheno.tsv")
+```
+
+Now go to Obsidian where the code for running the SNP analysis is.
+
+```{r}
+resilient_reference_snps = read_tsv("output_file.consensus_class.glm.logistic.hybrid")
+
+```
+
+```{r}
+
+# Load the biomaRt library
+library(biomaRt)
+
+rsids = scan("cd39.txt", what = "character")
+
+
+ensembl = useEnsembl(biomart = "snps")
+
+listDatasets(ensembl)
+
+# Select the human SNP mart
+snpMart = useEnsembl(biomart = "snps", dataset = "hsapiens_snp")
+
+# List of rsIDs
+#rsids = c("rs11207977", "rs186021206", "rs145297799", "rs3135506", "rs115849089", "rs1122608", "rs111245230", "rs11591147", "rs12916")  # replace with your actual rsIDs
+
+# Get chromosome and position
+results = getBM(attributes = c("refsnp_id", "chr_name", "chrom_start"), 
+                 filters = "snp_filter", 
+                 values = rsids, 
+                 mart = snpMart)
+
+results = results %>%
+  rename(c(
+    "CHROM" = "chr_name",
+    "POS" = "chrom_start"
+  )) %>%
+  mutate(CHROM = as.integer(CHROM)) %>%
+  drop_na()
+
+results$refsnp_id
+```
+
+```{r}
+rsids[!rsids %in% results$refsnp_id]
+
+```
+
+```{r}
+resilient_reference_snps = resilient_reference_snps %>%
+  rename(c("CHROM" = "#CHROM")) %>%
+  mutate(CHROM = as.integer(CHROM),
+         POS = as.integer(POS))
+  
+results %>%
+  left_join(resilient_reference_snps) %>%
+  write.csv("resilient_other_snps.csv")
+
+
+
+library(magrittr)
+resilient_reference_snps %>%
+  mutate(p.adjust = p.adjust(P %>% as.vector, method = "fdr")) %>%
+  filter(p.adjust < 0.05)
+```
+
 
 
 ## Individual Variable Model of Resilience
@@ -1887,4 +2707,16 @@ df1 %>%
 
 ```
 
+
+
+Randopm
+```{r}
+
+score_df %>%
+  filter(consensus_class == "resilient") %>%
+  left_join(pheno_df, by = c("record_id" = "record_id")) %>%
+  filter(smurfs == 0)
+
+pheno_df
+```
 
