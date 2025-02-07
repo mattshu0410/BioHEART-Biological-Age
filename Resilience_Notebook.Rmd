@@ -1,0 +1,883 @@
+---
+title: "Resilience Cohort in BioHEART"
+subtitle: "BioHEART"
+author: "Daniel Cheng, Matthew Shu"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    number_sections: yes
+    self_contained: yes
+    theme: lumen
+    toc: yes
+    toc_depth: 3
+    toc_float: no
+    code_folding: hide
+---
+
+```{r setup, include=FALSE, message=FALSE, error=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+  
+```{r, results='hide', warning=FALSE, message=FALSE}
+library(tidyverse)
+library(dplyr)
+library(glmnet)
+library(caret)
+library(corrplot)
+library(naniar)
+library(factoextra)
+library(kableExtra)
+library(MultiAssayExperiment)
+library(boot)
+library(CVrisk)
+library(limma)
+library(plotly)
+library(Glimma)
+library(ggrepel)
+library(pscl)
+library(bestNormalize)
+library(gridExtra)
+library(RiskScorescvd)
+```
+
+# Biological Age
+
+```{r, results='hide', warning=FALSE, message=FALSE}
+load("MultiAssayExperiment_20220816.RData")
+
+## Go one folder up from working directory and into another folder 
+
+# Mac
+data_folder = "/Users/matthewshu/Documents/GitHub-Projects/BioHEART Summer Project/Data"
+
+# Windows
+# data_folder = "/Github-Projects/BioHEART-Summer-Project/Data"
+
+
+BioHRT_dat = readxl::read_excel(file.path(data_folder,
+                                         "DL4_20230831-BL_Imaging-Omics-20240116_SHU.xlsx"), "nolabel")
+load("FRS_data.RData")
+```
+
+```{r}
+head(BioHRT_dat)
+BioHRT_dat = BioHRT_dat %>%
+  rename(gender = sex) 
+```
+
+
+## Ensemble Model of Resilience
+
+### Calculate Scores
+
+Relevant Variables from BioHEART
+
+* `race` (white, aa, chinese, or hispanic) 
+* `age` (years) 
+* `totchol` (mg/dL) \<- ours is in mmol/L hdl (mg/dL) 
+* `sbp` (mmHg) 
+* `bp_med` (Y/N)
+* `ace_i`
+* `bblocker`
+* `diur_loop`
+* `diur_k`
+* `diur_unk`
+* `ccb smoker` (Y/N) 
+* `diabetes` (Y/N)
+* `bmi` 
+* `lipid_med` (Y/N)
+* `statin`
+* `fh_heartattack` (Y/N)
+* `cac` (Agatson)
+
+
+#### All Score Calculations
+
+We have decided to calculate the following CVD Risk Scores for all BioHEART subjects. There are certain limitations of each score where important re-coding decisions were made on the BioHEART data. These limitations are denoted below.
+
+* FRS
+* ASCVD (Restricted)
+  + 20 < age < 79 
+  + 130 < totchol < 320
+  + 20 < hdl < 100
+  + 90 < sbp < 200
+  + White, African American, Other
+* MESA CHD (Limited Ethnicities)
+  + White, African American, Chinese, American
+* SCORE2
+
+BioHEART Ethnicity Coding (ethcat)
+
+* 1 = European 
+* 2 = Indigenous Australia 
+* 3 = Polynesian 
+* 4 = African 
+* 5 = Asian 
+* 6 = Indian 
+* 7 = Middle Eastern
+* 8 = Hispanic
+* 9 = Other / Dual Ethnicity
+
+Important Recoding Decisions
+* For ACCAHA, all other ethnicities were grouped under "Other". 
+* For MESA, Polynesians, Middle Eastern and any Other Ethnicities were classified as White.
+
+
+```{r}
+
+pheno_df = BioHRT_dat %>%
+  filter(disc_1000 == 1) %>%
+  # remove where gender or cac or cacs_pct not recorded
+  drop_na(gender, cacs, cacs_pct) %>%
+  # tc and hdl non-zero
+  filter(!is.na(tc) | !is.na(hdl)) %>%
+  # missing value encoded as .
+  filter(cacs_pct != ".") %>%
+  # limits of ascvd limited between 30 and 74
+  #filter((age<=79) & (age>=20)) %>%
+  mutate(
+    # refactor gender
+    gender = case_when(
+      gender==1 ~ 'male',
+      gender==2 ~ 'female'
+      ),
+    # convert from mmol/L to mg/dL
+    HDL_mgdl = hdl*38.67,
+    Chol_mgdl = tc*38.67,
+    # new variable presence or absence of blood pressure meds
+    bp_med = case_when(
+      ace_arb == 1 ~ 1,
+      bblocker == 1 ~ 1,
+      diuretic == 1 ~ 1,
+      ccb == 1 ~ 1,
+      TRUE ~ 0
+    ),
+    # new variable presence or absence of lipid lowering meds
+    lipid_med = case_when(
+      statin == 1 ~ 1,
+      ezetimibe == 1 ~ 1,
+      fibrate == 1 ~ 1,
+      niacin == 1 ~ 1,
+      babr == 1 ~ 1,
+      plant_sterol == 1 ~ 1,
+      lipid_lowering_unknown == 1 ~ 1,
+      TRUE ~ 0
+    ),
+    # assume no history of IHD if NA
+    fh_ihd = case_when(
+      fh_ihd == 1 ~ 1,
+      fh_ihd == 0 ~ 0,
+      is.na(fh_ihd) ~ 0
+    ),
+    # CACS as number
+    cacs = as.numeric(cacs),
+    cacs_pct = as.numeric(cacs_pct),
+    # ACCAHA Ethnicity
+    accaha_eth = case_when(
+      ethcat == 1 ~ 'white',
+      ethcat == 4 ~ 'aa',
+      TRUE ~ 'other'
+    ),
+    # Unresolved: MESA only contains 4 ethnicity categories, what do we do with other?
+    mesa_eth = case_when(
+      ethcat == 1 ~ 'white',
+      ethcat == 2 ~ 'aa',
+      ethcat == 3 ~ 'white', # contentious Polynesian
+      ethcat == 4 ~ 'aa',
+      ethcat == 5 ~ 'chinese',
+      ethcat == 7 ~ 'white',
+      ethcat == 8 ~ 'hispanic',
+      ethcat == 9 ~ 'white', # contentious mixed/Other
+      TRUE ~ 'white' # if NA assume white
+    ),
+    
+  )
+
+pheno_df = pheno_df %>%
+  rowwise() %>%
+  mutate(
+    # FRS Score
+    ascvd_10y_frs = ascvd_10y_frs(gender, age, HDL_mgdl, Chol_mgdl, sbp, bp_med, curr_smok, cvhx_dm),
+    # ASCVD (Pooled Cohort Equations - USA) w/ Requirements
+    # 20 < age < 79 
+    # 130 < totchol < 320
+    # 20 < hdl < 100
+    # 90 < sbp < 200
+    ascvd_10y_accaha = ascvd_10y_accaha(accaha_eth, gender, age, Chol_mgdl, HDL_mgdl, sbp, bp_med, curr_smok, cvhx_dm),
+    # MESA CHD
+    chd_10y_mesa = chd_10y_mesa(mesa_eth, gender, age, Chol_mgdl, HDL_mgdl,lipid_med, sbp, bp_med, curr_smok, cvhx_dm, fh_ihd),
+    # MESA CHD w/ CAC
+    chd_10y_mesa_cac = chd_10y_mesa_cac(mesa_eth, gender, age, Chol_mgdl, HDL_mgdl,lipid_med, sbp, bp_med, curr_smok, cvhx_dm, fh_ihd, cacs),
+    # SCORE2 <= 70 year olds
+    SCORE2_new = SCORE2(Risk.region = "Low", age, gender, curr_smok, sbp, cvhx_dm, tc, hdl, FALSE),
+    
+    )
+
+
+score_df = pheno_df %>%
+  dplyr::select(record_id, cacs, cacs_pct, ascvd_10y_frs, ascvd_10y_accaha, chd_10y_mesa, SCORE2_new)
+# Picked MESA without CAC since CAC will be the y-axis when calculating residuals
+# 112 missing values out of range but no particular pattern in its distribution
+
+```
+
+Score Correlation
+
+```{r}
+# with the value labels
+score_df %>%
+  select(ascvd_10y_frs, ascvd_10y_accaha, chd_10y_mesa, SCORE2_new) %>%
+  drop_na() %>%
+  cor() %>%
+  corrplot::corrplot(method = "number", type = "upper", tl.col = "black", tl.srt = 45)
+
+
+```
+
+
+### Calculating Zero-Inflated Regression Percentiles by Risk Score
+
+#### Transformation and Standardisation
+
+The following alternative is from Stuart's suggested method to standardise risk scores and take an average where possible.
+
+````{r}
+
+library(caret)
+
+
+standardise <- function(x) {
+  return((x - mean(x, na.rm = TRUE)) / sd(x, na.rm = TRUE))
+
+}
+
+# Normalizing the scores with orderNorm
+score_df$ordernorm_ascvd_10y_frs = standardise(orderNorm(score_df$ascvd_10y_frs)$x.t)
+score_df$ordernorm_ascvd_10y_accaha = standardise(orderNorm(score_df$ascvd_10y_accaha)$x.t)
+score_df$ordernorm_chd_10y_mesa = standardise(orderNorm(score_df$chd_10y_mesa)$x.t)
+score_df$ordernorm_SCORE2 = standardise(orderNorm(score_df$SCORE2_new)$x.t)
+
+hist(score_df$ordernorm_ascvd_10y_frs)
+hist(score_df$ordernorm_ascvd_10y_accaha)
+hist(score_df$ordernorm_chd_10y_mesa)
+hist(score_df$ordernorm_SCORE2)
+
+# Applying normalization to each score column
+score_df <- score_df %>%
+  rowwise() %>%
+  mutate(
+    average_norm_score = mean(c_across(starts_with("ordernorm_")), na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+score_df %>%
+  # Select only columns starting with ordernorm
+  select(record_id, starts_with("ordernorm_")) %>%
+  filter(record_id < 100) %>%
+  pivot_longer(
+    cols = starts_with("ordernorm_"),
+    names_to = "score",
+    values_to = "value"
+  ) %>%
+  ggplot(aes(y = value, x = as.factor(record_id), color = score)) +
+  geom_point() + 
+  theme_bw()
+
+
+score_df %>%
+  # Select only columns starting with ordernorm
+  select(record_id, starts_with("ordernorm_"), average_norm_score) %>%
+  #filter(record_id < 100) %>%
+  pivot_longer(
+    cols = c(starts_with("ordernorm_"), average_norm_score),
+    names_to = "score",
+    values_to = "value"
+  ) %>%
+  ggplot(aes(x = value, color = score)) +
+  geom_freqpoly() +
+  theme_bw()
+  
+```
+
+Fits on Combined Average Normalised Score
+
+```{r}
+
+# Fits Zero Inflated model w/ only FRS Score
+
+# 1 dropped because missing either CACS or average_norm_score need to investigate
+score_df = score_df %>% drop_na(cacs, average_norm_score)
+zeroinflmodel = zeroinfl(100*cacs ~ average_norm_score | average_norm_score, data = score_df, dist = "negbin")
+summary(zeroinflmodel)
+
+```
+
+```{r}
+score_df = score_df %>% 
+  mutate(
+    # Predicted counts from the negative binomial part of the zero-inflated model
+    # Based on the risk scores of a person, what should be their CACS
+    cacs_riskscorecond_countpred = predict(zeroinflmodel, data=score_df, type="count") / 100,
+    
+    # Predicted probability of a zero result from the zero-inflated part of the model
+    cacs_riskscorecond_zeroprob = predict(zeroinflmodel, data=score_df, type="zero"),
+    
+    # Overall predicted mean counts from the combined negative binomial & zero-inflated model
+    cacs_riskscorecond_meanpred = predict(zeroinflmodel, data=score_df, type="response") / 100
+  ) %>% 
+  mutate(
+    #The distribution is discrete, so for a given CACS value, I
+    # will set the percentile to the mean of p(obs) <= CACS
+    # and p(obs) < CACS i.e. add the two and divide by 2
+    cacs_riskscorecond_pct = case_when(
+      #when CACS > 0, p(obs) <= CACS and p(obs) < CACS both
+      # include the probability that p(obs)==0 
+      cacs > 0 ~ cacs_riskscorecond_zeroprob + (1 - cacs_riskscorecond_zeroprob) * 0.5 * (
+        pnbinom(q = 100 * score_df$cacs, size = zeroinflmodel$theta, mu = 100 * cacs_riskscorecond_countpred) +
+        pnbinom(q = 100 * (score_df$cacs) - 1, size = zeroinflmodel$theta, mu = 100 * cacs_riskscorecond_countpred)
+      ),
+      #when CACS==0, p(obs) <= CACS is just the probability
+      # that p(obs)==0, because p(obs) < 0 is 0
+      #Note that we can get an observation of zero either
+      # because we are drawing from the zero inflation, or
+      # because we are drawing from the counts model and the
+      # counts model happened to generate a 0
+      cacs == 0 ~ 0.5 * (cacs_riskscorecond_zeroprob + (1-cacs_riskscorecond_zeroprob)*pnbinom(q = 100 * score_df$cacs, size = zeroinflmodel$theta, mu = 100 * cacs_riskscorecond_countpred))
+    )
+  )
+
+```
+
+```{r}
+
+options(repr.plot.width = 15, repr.plot.height = 8)
+
+plot_theme <- theme(
+  legend.key.height = unit(2.5, "cm"),
+  legend.title = element_text(size = 15, angle = 90),
+  legend.title.align = 0.5,
+  legend.direction = "vertical",
+  text = element_text(size = 20)
+)
+
+plot_guide <- guides(
+  size = "none", 
+  colour = guide_colourbar(title.position = "right")
+)
+
+plot_zeroinflnegbinom_truevspredcacs <- ggplot(score_df, aes(
+  x = log(1 + cacs_riskscorecond_meanpred),
+  y = log(1 + cacs), 
+  color = cacs_riskscorecond_pct
+)) + 
+  geom_point(size = 3) + 
+  plot_guide + 
+  plot_theme
+
+plot_zeroinflnegbinom_cacspctvscacspred <- ggplot(score_df, aes(
+  x = log(1 + cacs_riskscorecond_meanpred), 
+  y = cacs_riskscorecond_pct,
+  color = log(1 + cacs)
+)) + 
+  geom_point(size = 3) + 
+  plot_guide + 
+  plot_theme
+
+grid.arrange(
+  plot_zeroinflnegbinom_truevspredcacs, 
+  plot_zeroinflnegbinom_cacspctvscacspred, 
+  ncol = 2
+)
+
+
+```
+
+### Classifying by Zero-Inflated Regression Percentiles by Risk Score
+
+```{r}
+
+score_df$consensus_class = case_when(
+  score_df$cacs_riskscorecond_pct < 0.20 ~ "resilient",
+  score_df$cacs_riskscorecond_pct > 0.80 ~ "susceptible",
+  ((score_df$cacs_riskscorecond_pct > 0.40) & (score_df$cacs_riskscorecond_pct < 0.60))  ~ "reference",
+  TRUE ~ "ignore"
+)
+
+score_df %>% select(consensus_class, cacs_riskscorecond_pct)
+
+ggplot(score_df, aes(x = average_norm_score, y = cacs, color = consensus_class)) +
+  geom_point() +
+  scale_color_manual(values = c("resilient" = "green", "reference" = "blue", "susceptible" = "red", "ignore" = "grey50")) +
+  theme_bw() +
+  labs(title = "CACS vs Average Normalised Score", x = "Average Normalised Score", y = "CACS", color = "Consensus Class")
+
+score_df %>%
+  select(cacs, average_norm_score, consensus_class) %>%
+  ggplot() +
+  aes(x = average_norm_score , y = log(cacs + 1), color = consensus_class) +
+  geom_point() +
+  theme_bw() +
+  labs(title = "log(CACS+1) vs Average Normalised Score", x = "Average Normalised Score", y = "log(CACS+1)", color = "Consensus Class")
+
+
+ggplot(score_df, aes(x = average_norm_score , y = cacs_riskscorecond_pct, color = consensus_class)) +
+  geom_point() +
+  scale_color_manual(values = c("resilient" = "green", "reference" = "blue", "susceptible" = "red", "ignore" = "grey50")) +
+  theme_bw() +
+  labs(title = "CACS Percentile (Risk Adjusted) vs Average Normalised Score", x = "Average Normalised Score", y = "CACS Percentile (Risk Adjusted)", color = "Consensus Class")
+
+# Convert to factor for plotting purposes, setting 'reference' as the reference level
+score_df$consensus_class = factor(score_df$consensus_class, levels = c("reference", "resilient", "susceptible", "ignore"))
+
+table(score_df$consensus_class)
+
+# Resilient vs Other
+# score_df = score_df %>%
+#   mutate(consensus_class = case_when(
+#     consensus_class == "ignore" ~ "other",
+#     consensus_class == "reference" ~ "other",
+#     consensus_class == "susceptible" ~ "other",
+#     TRUE ~ "resilient"
+#   ))
+
+
+write.csv(score_df, "resilience.csv")
+```
+
+### Comparing the Classifications
+#### Metabolomics
+
+```{r, warning=FALSE}
+# Metabolomics
+# Picks the first assay rlmSampleAllShort_H_batch
+metab_exp = longFormat(bioheart_mae[,,'Metabolomics'],
+                 colDataCols = c("gender","age", "smurfs", "cacs", "cacs_pct", "gensini"),
+                 i = 3L)
+
+metab_df = data.frame(metab_exp) %>%
+  filter(primary != "Pool") %>%
+  pivot_wider(id_cols = c(primary, colname, gender, age, smurfs, cacs, cacs_pct, gensini), 
+              names_from = rowname, values_from = value) %>%
+  filter(if_all(everything(), ~ .!=".")) %>%
+  transform(cacs = as.numeric(cacs), cacs_pct = as.numeric(cacs_pct), gensini = as.numeric(gensini), primary = as.numeric(primary)) %>%
+  # Remove duplicate rows, .keep_all <- keeps all of the rest of columns
+  distinct(primary, .keep_all = TRUE) %>%
+  drop_na() #%>%
+  #mutate(across(8:60, ~(.-min(.))/((max(.)-min(.)))))
+
+graph_df = score_df %>%
+  dplyr::select(record_id, consensus_class) %>%
+  inner_join(metab_df, by=c('record_id'='primary')) # %>%
+  #filter(consensus_class %in% c("resilient", "reference"))
+
+# Graph Box Plot
+graph_df %>%
+  pivot_longer(cols = -c(record_id, gender, consensus_class, colname, age, smurfs, cacs, cacs_pct, gensini), names_to = "metabolite", values_to = "value") %>%
+  ggplot() +
+  aes(x = metabolite, y = value, colour = consensus_class) +
+  geom_boxplot() +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+```
+
+##### Differential Expression Analysis
+
+The contrasts are `resilient` - `reference`.
+
+```{r, warning=FALSE}
+filtered_graph_df = graph_df #%>%
+  #filter(gender == 1) %>%
+  #filter(age > 60) 
+lm_df = filtered_graph_df %>%
+  dplyr::select(-c(record_id, consensus_class, colname, gender, age, smurfs, cacs, cacs_pct, gensini)) %>%
+  t()
+
+design = model.matrix(~ consensus_class, filtered_graph_df)
+fit = lmFit(lm_df, design)
+efit = eBayes(fit)
+topTable(efit)
+```
+
+The contrasts are `resilient` - `reference`.
+
+```{r, warning=FALSE}
+
+# Contrasts
+CM = makeContrasts(consensus_classresilient = consensus_classresilient, levels = design)
+constrast_fit = contrasts.fit(efit, contrast = CM)
+constrast_fit = eBayes(constrast_fit)
+
+topTable(constrast_fit, n=50)
+
+```
+
+The contrasts are `susceptible` - `reference`.
+
+```{r, warning=FALSE}
+
+# Contrasts
+
+CM = makeContrasts(consensus_classsusceptible = consensus_classsusceptible, levels = design)
+constrast_fit = contrasts.fit(efit, contrast = CM)
+constrast_fit = eBayes(constrast_fit)
+
+topTable(constrast_fit, n=50)
+
+```
+
+
+The contrasts are `susceptible` - `resilient`.
+
+```{r, warning=FALSE}
+
+# Contrasts
+
+CM = makeContrasts(consensus_classcompare = consensus_classsusceptible - consensus_classresilient, levels = design)
+constrast_fit = contrasts.fit(efit, contrast = CM)
+constrast_fit = eBayes(constrast_fit)
+
+topTable(constrast_fit, n=50)
+
+```
+
+
+```{r, warning=FALSE}
+# Volcano Plot
+library(EnhancedVolcano)
+p = EnhancedVolcano(
+  constrast_fit,
+  lab = rownames(constrast_fit),
+  x = "coefficients",
+  y = "p.value",
+  title = "Resilient vs Reference (un-adjusted p-values)",
+  pCutoff = 0.05,
+  labSize = 6
+)
+
+ggsave("resilient_reference_volcano.png", plot = p, width = 12, height = 8, dpi = 300)
+
+# MA Plot
+glMDPlot(constrast_fit,
+         counts = lm_df,
+         coef=1, 
+         main= "Resilient v.s. Reference",
+         groups = filtered_graph_df$consensus_class,
+         html="resilient_reference_ma_plot.html")
+
+```
+
+#### Lipidomics
+Lipid Totals.
+
+```{r, warning=FALSE}
+lipid_totals_exp = longFormat(bioheart_mae[,,'Lipidomics_totals'],
+                 colDataCols = c("age", "smurfs", "cacs", "cacs_pct", "gensini"),
+                 i = 2L)
+
+lipid_totals_df = data.frame(lipid_totals_exp) %>%
+  filter(primary != "Pool") %>%
+  pivot_wider(id_cols = c(primary, colname, age, smurfs, cacs, cacs_pct, gensini), 
+              names_from = rowname, values_from = value) %>%
+  transform(cacs = as.numeric(cacs), cacs_pct = as.numeric(cacs_pct), gensini = as.numeric(gensini), primary = as.numeric(primary))
+
+graph_df = score_df %>%
+  select(record_id, consensus_class) %>%
+  inner_join(lipid_totals_df, by=c('record_id'='primary'))
+
+score_df %>%
+  select(record_id, consensus_class) %>%
+  inner_join(lipid_totals_df, by=c('record_id'='primary')) %>%
+  filter(consensus_class %in% c("resilient", "reference")) %>%
+  pivot_longer(cols = -c(record_id, consensus_class, colname, age, smurfs, cacs, cacs_pct, gensini), names_to = "lipid_total", values_to = "value") %>%
+  ggplot() +
+  aes(x = lipid_total, y = value, colour = consensus_class) +
+  geom_boxplot() +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+
+```
+
+##### Differential Expression Analysis
+
+```{r, warning=FALSE}
+filtered_graph_df = graph_df #%>%
+  #filter(gender == 1) %>%
+  #filter(age > 60) 
+lm_df = filtered_graph_df %>%
+  dplyr::select(-c(record_id, consensus_class, colname, age, smurfs, cacs, cacs_pct, gensini)) %>%
+  t()
+
+design = model.matrix(~ consensus_class, filtered_graph_df)
+fit = lmFit(lm_df, design)
+efit = eBayes(fit)
+topTable(efit)
+
+```
+
+The contrasts are `resilient` - `reference`.
+
+```{r, warning=FALSE}
+
+# Contrasts
+CM = makeContrasts(consensus_classresilient = consensus_classresilient, levels = design)
+constrast_fit = contrasts.fit(efit, contrast = CM)
+constrast_fit = eBayes(constrast_fit)
+
+topTable(constrast_fit, n=50)
+
+```
+
+The contrasts are `susceptible` - `reference`.
+
+```{r, warning=FALSE}
+
+# Contrasts
+
+CM = makeContrasts(consensus_classsusceptible = consensus_classsusceptible, levels = design)
+constrast_fit = contrasts.fit(efit, contrast = CM)
+constrast_fit = eBayes(constrast_fit)
+
+topTable(constrast_fit, n=50)
+
+```
+
+
+The contrasts are `susceptible` - `resilient`.
+
+```{r, warning=FALSE}
+
+# Contrasts
+
+CM = makeContrasts(consensus_classcompare = consensus_classsusceptible - consensus_classresilient, levels = design)
+constrast_fit = contrasts.fit(efit, contrast = CM)
+constrast_fit = eBayes(constrast_fit)
+
+topTable(constrast_fit, n=50)
+
+```
+
+
+#### Proteomics
+
+```{r, warning=FALSE}
+
+prot_exp = longFormat(bioheart_mae[,,'Proteomics'],
+                 colDataCols = c("age", "smurfs", "cacs", "cacs_pct", "gensini"))
+
+
+prot_df = data.frame(prot_exp) %>%
+  filter(!grepl("Repeat", colname)) %>%
+  filter(primary != "79") %>%
+  filter(primary != "Pool") %>%
+  filter(primary != "Pool") %>%
+  pivot_wider(id_cols = c(primary, age, smurfs, cacs, cacs_pct, gensini), 
+              names_from = rowname, values_from = value) %>%
+  transform(cacs = as.numeric(cacs), cacs_pct = as.numeric(cacs_pct), gensini = as.numeric(gensini), primary = as.numeric(primary))
+
+#score_df %>%
+#  select(ID, consensus_class) %>%
+#  inner_join(prot_df, by=c('ID'='primary')) %>%
+#  filter(consensus_class %in% c("resilient", "reference")) %>%
+#  pivot_longer(cols = -c(ID, consensus_class, age, smurfs, cacs, cacs_pct, gensini), names_to = "proteins", values_to = "value") %>%
+#  ggplot() +
+#  aes(x = proteins, y = value, colour = consensus_class) +
+#  geom_boxplot() +
+#  theme_bw() +
+#  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+paste(colnames(prot_df), collapse=", ")
+
+write.csv(prot_df, "proteomics.csv")
+```
+
+
+##### Differential Expression Analysis
+
+```{r, warning=FALSE}
+
+prot_patient_df = score_df %>%
+  dplyr::select(record_id, consensus_class, average_norm_score) %>%
+  # Remove outlier 1067
+  #filter(record_id != 1067) %>%
+  dplyr::inner_join(prot_df, by=c('record_id'='primary'))
+setdiff(score_df$record_id, prot_df$primary)
+
+lm_df = prot_patient_df %>%
+  select(-c(record_id, consensus_class, age, smurfs, cacs, cacs_pct, gensini, average_norm_score)) %>%
+  t()
+
+design = model.matrix(~ consensus_class, prot_patient_df)
+
+fit = lmFit(lm_df, design)
+efit = eBayes(fit)
+topTable(efit)
+
+```
+
+The contrasts are `resilient` - `reference`.
+
+```{r, warning=FALSE}
+
+# Contrasts
+CM = makeContrasts(consensus_classresilient = consensus_classresilient, levels = design)
+constrast_fit = contrasts.fit(efit, contrast = CM)
+constrast_fit = eBayes(constrast_fit)
+
+topTable(constrast_fit, n=50)
+
+```
+
+The contrasts are `susceptible` - `reference`.
+
+```{r, warning=FALSE}
+
+# Contrasts
+
+CM = makeContrasts(consensus_classsusceptible = consensus_classsusceptible, levels = design)
+constrast_fit = contrasts.fit(efit, contrast = CM)
+constrast_fit = eBayes(constrast_fit)
+
+topTable(constrast_fit, n=50)
+
+```
+
+
+The contrasts are `susceptible` - `resilient`.
+
+```{r, warning=FALSE}
+
+# Contrasts
+
+CM = makeContrasts(consensus_classcompare = consensus_classsusceptible - consensus_classresilient, levels = design)
+constrast_fit = contrasts.fit(efit, contrast = CM)
+constrast_fit = eBayes(constrast_fit)
+
+topTable(constrast_fit, n=50)
+
+```
+
+
+```{r}
+signif_igs = c("IGLV7.43.IGLV7.46", "IGHM", "IGKV2.29.IGKV2.30.IGKV2D.29", "IGKV2.29.IGKV2D.29")
+
+#signif_igs = c("IGLV7-43;IGLV7-46", "IGHM", "IGKV2-29;IGKV2-30;IGKV2D-29", "IGKV2-29;IGKV2D-29")
+
+# Immunoglobulins vs CACS Percentile
+
+prot_patient_df %>%
+  select(cacs_pct, signif_igs, consensus_class, average_norm_score) %>%
+  pivot_longer(names_to = "protein", values_to = "value", -c(consensus_class, cacs_pct, average_norm_score)) %>%
+  filter(consensus_class == "resilient") %>%
+  ggplot() +
+  aes(x = cacs_pct, y = value, colour = protein) +
+  geom_point() +
+  theme_bw() +
+  labs(title = "Immunoglobulins vs CACS Percentile", x = "CACS Percentile", y = "Immunoglobulins")
+
+
+prot_patient_df %>%
+  select(cacs_pct, `IGLV7.43.IGLV7.46`, consensus_class, average_norm_score) %>%
+  filter(consensus_class == "resilient") %>%
+  ggplot() +
+  aes(x = average_norm_score, y = `IGLV7.43.IGLV7.46`) +
+  geom_point() +
+  theme_bw() +
+  labs(title = "Immunoglobulins vs Average Normalised Score", x = "Average Normalised Score", y = "Immunoglobulins")
+
+# Immunoglobulins vs Average Normalised Score
+
+prot_patient_df %>%
+  select(cacs_pct, signif_igs, consensus_class, average_norm_score) %>%
+  pivot_longer(names_to = "protein", values_to = "value", -c(consensus_class, cacs_pct, average_norm_score)) %>%
+  filter(consensus_class == "resilient") %>%
+  ggplot() +
+  aes(x = average_norm_score, y = value, color = protein) +
+  geom_point() +
+  theme_bw() +
+  labs(title = "Immunoglobulins vs Average Normalised Score", x = "Average Normalised Score", y = "Immunoglobulins")
+
+
+prot_patient_df %>%
+  select(cacs_pct, signif_igs, consensus_class, average_norm_score) %>%
+  pivot_longer(names_to = "protein", values_to = "value", -c(consensus_class, cacs_pct, average_norm_score)) %>%
+  filter(consensus_class %in% c("resilient", "susceptible")) %>%
+  ggplot() +
+  aes(x = average_norm_score, y = value, color = consensus_class, shape = protein) +
+  geom_point() +
+  theme_bw() +
+  labs(title = "Immunoglobulins vs Average Normalised Score", x = "Average Normalised Score", y = "Immunoglobulins")
+
+
+is_outlier <- function(x) {
+  return(x < quantile(x, 0.25) - 1.5 * IQR(x) | x > quantile(x, 0.75) + 1.5 * IQR(x))
+}
+
+prot_patient_df %>%
+  select(record_id, cacs_pct, signif_igs, consensus_class, average_norm_score) %>%
+  filter(consensus_class %in% c("resilient", "reference", "susceptible")) %>%
+  pivot_longer(names_to = "protein", values_to = "value", -c(record_id, consensus_class, cacs_pct, average_norm_score)) %>%
+  mutate(outlier = ifelse(is_outlier(value), record_id, as.numeric(NA))) %>%
+  ggplot() +
+  aes(x = consensus_class, y = value, color = consensus_class) +
+  facet_wrap(~protein)+
+  geom_boxplot(notch=TRUE) +
+  geom_text(aes(label = outlier), na.rm = TRUE, hjust = -0.3) +
+  theme_bw() +
+  labs(title = "Immunoglobulins vs Average Normalised Score", x = "Average Normalised Score", y = "Immunoglobulins")
+
+
+# with the value labels
+prot_patient_df %>%
+  select(signif_igs) %>%
+  cor() %>%
+  corrplot::corrplot(method = "number", type = "upper", tl.col = "black", tl.srt = 45)
+
+# Immunoglobulins vs ln(CACS+1)
+
+prot_patient_df %>%
+  select(cacs, signif_igs, consensus_class, average_norm_score) %>%
+  pivot_longer(names_to = "protein", values_to = "value", -c(consensus_class, cacs, average_norm_score)) %>%
+  filter(consensus_class %in% c("resilient", "susceptible")) %>%
+  ggplot() +
+  aes(x = log(cacs+1), y = value, colour = consensus_class) +
+  facet_wrap(~protein, scales = "free") +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  theme_bw() +
+  labs(title = "Immunoglobulins vs ln(CACS+1)", x = "ln(CACS+1)", y = "Immunoglobulins")
+
+library(ggpubr)
+library(ggthemes)
+
+# Immunoglobulins vs ln(CACS+1)
+
+prot_patient_df %>%
+  select(cacs, signif_igs, consensus_class, average_norm_score) %>%
+  pivot_longer(names_to = "protein", values_to = "value", -c(consensus_class, cacs, average_norm_score)) %>%
+  filter(consensus_class %in% c("resilient", "susceptible")) %>%
+  mutate(ln_cacs = log(cacs+1)) %>%
+  ggscatter(
+    x = "ln_cacs", y = "value",
+    color = "consensus_class", palette = "jco",
+    cor.coef = TRUE
+    ) +
+    geom_smooth(method = "lm", color = "black") +
+    facet_wrap(~protein, scales = "free") +
+    labs(title = "Immunoglobulins vs ln(CACS+1)", x = "ln(CACS+1)", y = "Immunoglobulins")
+
+# Immunoglobulins vs Average Normalised Score
+
+prot_patient_df %>%
+  select(cacs_pct, signif_igs, consensus_class, average_norm_score) %>%
+  pivot_longer(names_to = "protein", values_to = "value", -c(consensus_class, cacs_pct, average_norm_score)) %>%
+  filter(consensus_class %in% c("resilient", "susceptible")) %>%
+  ggscatter(
+    x = "average_norm_score", y = "value",
+    color = "consensus_class", palette = "jco",
+    cor.coef = TRUE
+    ) +
+    geom_smooth(method = "lm", color = "black") +
+    facet_wrap(~protein, scales = "free") +
+    labs(title = "Immunoglobulins vs Average Normalised Score", x = "Average Normalised Score", y = "Immunoglobulins")
+```
+
