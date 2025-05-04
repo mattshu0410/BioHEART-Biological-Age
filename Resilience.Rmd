@@ -46,8 +46,15 @@ library(RiskScorescvd)
 ```{r, results='hide', warning=FALSE, message=FALSE}
 load("MultiAssayExperiment_20220816.RData")
 
+## Go one folder up from working directory and into another folder 
 
-data_folder = "M:/Github-Version-Control-Projects/BioHEART-Summer-Project/Data"
+# Mac
+data_folder = "/Users/matthewshu/Documents/GitHub-Projects/BioHEART Summer Project/Data"
+
+# Windows
+#data_folder = "/Github-Projects/BioHEART-Summer-Project/Data"
+
+
 BioHRT_dat = readxl::read_excel(file.path(data_folder,
                                          "DL4_20230831-BL_Imaging-Omics-20240116_SHU.xlsx"), "nolabel")
 load("FRS_data.RData")
@@ -346,6 +353,7 @@ pheno_df = pheno_df %>%
     )
   )
 
+
 score_df = pheno_df %>%
   dplyr::select(record_id, cacs, cacs_pct, ascvd_10y_frs, ascvd_10y_accaha, chd_10y_mesa, SCORE2, SCORE2_new)
 # Picked MESA without CAC since CAC will be the y-axis when calculating residuals
@@ -489,6 +497,9 @@ score_df = pheno_df %>%
 # Drop all NA across all scores
 score_df = score_df %>% drop_na(ascvd_10y_frs)
 
+
+
+
 ```
 
 Missing Value Analysis
@@ -569,6 +580,7 @@ cohort = pheno_df %>%
   # )
 
 write_csv(cohort, "M:\\Github-Version-Control-Projects\\BioHEART-Biological-Age\\cohort.csv")
+
 ```
 
 ### Cluster Analysis
@@ -867,7 +879,10 @@ score_df = score_df %>% drop_na(cacs, average_norm_score)
 zeroinflmodel = zeroinfl(100*cacs ~ average_norm_score | average_norm_score, data = score_df, dist = "negbin")
 summary(zeroinflmodel)
 
-
+score_df %>% select(record_id, average_norm_score) %>% filter(is.na(average_norm_score)
+                                                              
+score_df %>% filter(record_id == 1209)
+pheno_df %>% filter(record_id == 1209)
 ```
 
 Fits on Single Score Normalised
@@ -1786,14 +1801,19 @@ prot_exp = longFormat(bioheart_mae[,,'Proteomics'],
                  colDataCols = c("age", "smurfs", "cacs", "cacs_pct", "gensini"))
 
 
-prot_df = data.frame(prot_exp) %>%
+prot_df = data.frame(prot_exp, check.names=FALSE) %>%
   filter(!grepl("Repeat", colname)) %>%
   filter(primary != "79") %>%
   filter(primary != "Pool") %>%
   filter(primary != "Pool") %>%
   pivot_wider(id_cols = c(primary, age, smurfs, cacs, cacs_pct, gensini), 
               names_from = rowname, values_from = value) %>%
-  transform(cacs = as.numeric(cacs), cacs_pct = as.numeric(cacs_pct), gensini = as.numeric(gensini), primary = as.numeric(primary))
+  mutate(
+    cacs = as.numeric(cacs),
+    cacs_pct = as.numeric(cacs_pct),
+    gensini = as.numeric(gensini),
+    primary = as.numeric(primary)
+  )
 
 #score_df %>%
 #  select(ID, consensus_class) %>%
@@ -1813,10 +1833,10 @@ prot_df = data.frame(prot_exp) %>%
 ```{r, warning=FALSE}
 
 prot_patient_df = score_df %>%
-  select(record_id, consensus_class, average_norm_score) %>%
+  dplyr::select(record_id, consensus_class, average_norm_score) %>%
   # Remove outlier 1067
   #filter(record_id != 1067) %>%
-  inner_join(prot_df, by=c('record_id'='primary'))
+  dplyr::inner_join(prot_df, by=c('record_id'='primary'))
 setdiff(score_df$record_id, prot_df$primary)
 
 lm_df = prot_patient_df %>%
@@ -1829,6 +1849,7 @@ fit = lmFit(lm_df, design)
 fit = eBayes(fit)
 topTable(fit)
 
+
 CM = makeContrasts(consensus_classresilient = consensus_classresilient, levels = design)
 #CM = makeContrasts(consensus_classcompare = consensus_classsusceptible - consensus_classresilient, levels = design)
 #CM = makeContrasts(consensus_classsusceptible = consensus_classsusceptible, levels = design)
@@ -1840,22 +1861,54 @@ table(score_df$consensus_class)
 
 prot_patient_df %>%
   summarise(mean(GC))
+
+# Plot histogram for first 5 proteins in prot_patient_df
+# Looks to be fairly normally distributed therefore limma is valid
+prot_patient_df %>%
+  pivot_longer(cols = -c(record_id, consensus_class, age, smurfs, cacs, cacs_pct, gensini, average_norm_score), names_to = "protein", values_to = "value") %>%
+  filter(protein %in% c("IGLV7-43;IGLV7-46", "IGHM", "IGKV2-29;IGKV2-30;IGKV2D-29", "IGKV2-29;IGKV2D-29")) %>%
+  ggplot() +
+  aes(x = value, fill = protein) +
+  geom_histogram(bins = 30, position = "identity", alpha = 0.5) +
+  theme_bw() +
+  theme(legend.position = "top")
+
 ```
 
 ```{r}
-prot_patient_df %>%
+#signif_igs = c("IGLV7.43.IGLV7.46", "IGHM", "IGKV2.29.IGKV2.30.IGKV2D.29", "IGKV2.29.IGKV2D.29")
+
+signif_igs = c("IGLV7-43;IGLV7-46", "IGHM", "IGKV2-29;IGKV2-30;IGKV2D-29", "IGKV2-29;IGKV2D-29")
+signif_igs = c("IGFALS", "F2", "APOL1", "IGFBP3" )
+
+# Proteins vs CACS Percentile
+
+p = prot_patient_df %>%
   select(cacs_pct, signif_igs, consensus_class, average_norm_score) %>%
   pivot_longer(names_to = "protein", values_to = "value", -c(consensus_class, cacs_pct, average_norm_score)) %>%
-  filter(consensus_class == "resilient") %>%
+  #filter(consensus_class == "resilient") %>%
   ggplot() +
   aes(x = cacs_pct, y = value, colour = protein) +
   geom_point() +
-  theme_bw() +
-  labs(title = "Immunoglobulins vs CACS Percentile", x = "CACS Percentile", y = "Immunoglobulins")
+  labs(title = "Proteins vs CACS Percentile", x = "CACS Percentile", y = "Proteins", color="Protein")
 
+p = prot_patient_df %>%
+  select(cacs_pct, signif_igs, consensus_class, average_norm_score) %>%
+  pivot_longer(names_to = "protein", values_to = "value", -c(consensus_class, cacs_pct, average_norm_score)) %>%
+  ggscatter(
+    x = "cacs_pct",
+    y = "value",
+    color = "protein",
+    palette = "jco",
+    #title = "Proteins vs CACS Percentile",
+    xlab = "CACS Percentile",
+    ylab = "Proteins"
+  ) +
+  labs(color = "Protein") # Adjust legend title
 
-signif_igs = c("IGLV7-43;IGLV7-46", "IGHM", "IGKV2-29;IGKV2-30;IGKV2D-29", "IGKV2-29;IGKV2D-29")
+ggsave("ig_vs_cacs_pct.png", plot = p, width = 12, height = 8, dpi = 300)
 
+# Specific Immunoglobulin vs Average Normalised Score
 
 prot_patient_df %>%
   select(cacs_pct, `IGLV7-43;IGLV7-46`, consensus_class, average_norm_score) %>%
@@ -1864,17 +1917,45 @@ prot_patient_df %>%
   aes(x = average_norm_score, y = `IGLV7-43;IGLV7-46`) +
   geom_point() +
   theme_bw() +
-  labs(title = "Immunoglobulins vs Average Normalised Score", x = "Average Normalised Score", y = "Immunoglobulins")
+  labs(title = "Proteins vs Average Normalised Score", x = "Average Normalised Score", y = "Proteins")
+
+# Proteins vs Average Normalised Score
 
 prot_patient_df %>%
   select(cacs_pct, signif_igs, consensus_class, average_norm_score) %>%
   pivot_longer(names_to = "protein", values_to = "value", -c(consensus_class, cacs_pct, average_norm_score)) %>%
-  filter(consensus_class == "resilient") %>%
+  #filter(consensus_class == "resilient") %>%
   ggplot() +
   aes(x = average_norm_score, y = value, color = protein) +
   geom_point() +
   theme_bw() +
-  labs(title = "Immunoglobulins vs Average Normalised Score", x = "Average Normalised Score", y = "Immunoglobulins")
+  labs(title = "Proteins vs Average Normalised Score", x = "Average Normalised Score", y = "Proteins")
+
+p = prot_patient_df %>%
+  select(cacs_pct, signif_igs, consensus_class, average_norm_score) %>%
+  pivot_longer(names_to = "protein", values_to = "value", -c(consensus_class, cacs_pct, average_norm_score)) %>%
+  ggscatter(
+    x = "average_norm_score",
+    y = "value",
+    color = "protein",
+    palette = "jco",
+    add = "none", # No additional fit lines
+    #title = "Proteins vs Average Normalised Score",
+    xlab = "Average Normalised Score",
+    ylab = "Proteins"
+  ) +
+  labs(color = "Protein") # Adjust legend title
+ggsave("ig_vs_avg_norm_score.png", plot = p, width = 12, height = 8, dpi = 300)
+
+prot_patient_df %>%
+  select(cacs_pct, signif_igs, consensus_class, average_norm_score) %>%
+  pivot_longer(names_to = "protein", values_to = "value", -c(consensus_class, cacs_pct, average_norm_score)) %>%
+  filter(consensus_class %in% c("resilient", "susceptible")) %>%
+  ggplot() +
+  aes(x = average_norm_score, y = value, color = consensus_class, shape = protein) +
+  geom_point() +
+  theme_bw() +
+  labs(title = "Proteins vs Average Normalised Score", x = "Average Normalised Score", y = "Proteins")
 
 
 is_outlier <- function(x) {
@@ -1892,7 +1973,7 @@ prot_patient_df %>%
   geom_boxplot(notch=TRUE) +
   geom_text(aes(label = outlier), na.rm = TRUE, hjust = -0.3) +
   theme_bw() +
-  labs(title = "Immunoglobulins vs Average Normalised Score", x = "Average Normalised Score", y = "Immunoglobulins")
+  labs(title = "Proteins vs Average Normalised Score", x = "Average Normalised Score", y = "Proteins")
 
 
 # with the value labels
@@ -1911,9 +1992,206 @@ score_df %>%
   geom_point() +
   theme_bw()
 
+
+
+# Proteins vs ln(CACS+1)
+
+prot_patient_df %>%
+  select(cacs, signif_igs, consensus_class, average_norm_score) %>%
+  pivot_longer(names_to = "protein", values_to = "value", -c(consensus_class, cacs, average_norm_score)) %>%
+  filter(consensus_class %in% c("resilient", "susceptible")) %>%
+  ggplot() +
+  aes(x = log(cacs+1), y = value, colour = consensus_class) +
+  facet_wrap(~protein, scales = "free") +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  theme_bw() +
+  labs(title = "Proteins vs ln(CACS+1)", x = "ln(CACS+1)", y = "Proteins")
+
+library(ggpubr)
+library(ggthemes)
+
+# Proteins vs ln(CACS+1)
+
+p = prot_patient_df %>%
+  select(cacs, signif_igs, consensus_class, average_norm_score) %>%
+  pivot_longer(names_to = "protein", values_to = "value", -c(consensus_class, cacs, average_norm_score)) %>%
+  filter(consensus_class %in% c("resilient", "susceptible")) %>%
+  mutate(ln_cacs = log(cacs+1)) %>%
+  ggscatter(
+    x = "ln_cacs", y = "value",
+    color = "consensus_class", palette = "jco",
+    cor.coef = TRUE
+    ) +
+    geom_smooth(method = "lm", color = "black", se=FALSE) +
+    facet_wrap(~protein, scales = "free") +
+    labs(#title = "Proteins vs ln(CACS+1)", 
+         x = "ln(CACS+1)", 
+         y = "Proteins",
+         color = "Classification")
+ggsave("ig_vs_ln_cacs_sep.png", plot = p, width = 12, height = 8, dpi = 300)
+
+# Proteins vs Average Normalised Score
+
+p = prot_patient_df %>%
+  select(cacs_pct, signif_igs, consensus_class, average_norm_score) %>%
+  pivot_longer(names_to = "protein", values_to = "value", -c(consensus_class, cacs_pct, average_norm_score)) %>%
+  filter(consensus_class %in% c("resilient", "susceptible")) %>%
+  ggscatter(
+    x = "average_norm_score", y = "value",
+    color = "consensus_class", palette = "jco",
+    cor.coef = TRUE
+    ) +
+    geom_smooth(method = "lm", color = "black", se=FALSE) +
+    facet_wrap(~protein, scales = "free") +
+    labs(#title = "Proteins vs Average Normalised Score", 
+         x = "Average Normalised Score", 
+         y = "Proteins", 
+         color = "Classification")
+ggsave("ig_vs_avg_norm_score_sep.png", plot = p, width = 12, height = 8, dpi = 300)
+
 ```
+
+```{r}
+# Get all the rows with maximum in each protein
+prot_patient_df %>% select(record_id, signif_igs) %>% filter(IGFALS == max(IGFALS, na.rm = TRUE))
+
+```
+
+Plotting ln(CACS) against individual components of the risk score split by upper and lower quartiles of a protein.
+
 ```{r}
 
+risk_score_var = c("gender", "age", "Chol_mgdl", "HDL_mgdl", "sbp", "bp_med", "curr_smok", "cvhx_dm")
+quartile_proteins = function(df, protein) {
+  graph_df = df %>%
+    select(record_id, consensus_class, cacs, protein, average_norm_score) %>%
+    mutate(ln_cacs = log(cacs + 1)) %>%
+    mutate(quartile = as.factor(ntile(!!sym(protein), 4))) %>%
+    left_join(pheno_df %>%
+                select(record_id, any_of(risk_score_var))) %>%
+    mutate(
+      bp_med = as.factor(bp_med),
+      curr_smok = as.factor(curr_smok),
+      cvhx_dm = as.factor(cvhx_dm),
+      gender = as.factor(gender)
+    )
+  
+  return(graph_df)
+}
+
+# Dictionary of descriptive variable names for use in graphing
+var_labels = list(
+  gender = "Gender",
+  age = "Age",
+  Chol_mgdl = "Total Cholesterol (mg/dL)",
+  HDL_mgdl = "HDL Cholesterol (mg/dL)",
+  sbp = "Systolic Blood Pressure (mmHg)",
+  bp_med = "Blood Pressure Medication",
+  curr_smok = "Current Smoker",
+  cvhx_dm = "Diabetes Mellitus"
+)
+
+signif_igs
+protein = "IGFBP3"
+graph_df = quartile_proteins(prot_patient_df, protein)
+
+# Numerical
+variable = "cvhx_dm"
+for (protein in signif_igs) {
+  graph_df = quartile_proteins(prot_patient_df, protein)
+  for (var in c("age", "Chol_mgdl", "HDL_mgdl", "sbp")) {
+    p = ggscatter(
+      graph_df,
+      x = var,
+      y = "ln_cacs",
+      color = "quartile",
+      palette = "jco",
+      add = "reg.line",
+      cor.coef = FALSE
+    ) +
+      stat_cor(aes(color = quartile), label.x = 20) +
+      labs(
+        title = paste("ln(CACS+1) vs", var_labels[[var]]),
+        x = var_labels[[var]],
+        y = "ln(CACS+1)",
+        colour = paste(protein, "quartile")
+      )
+    print(p)
+  }
+}
+
+ggscatter(graph_df,
+    x = variable, y = "ln_cacs",
+    color = "quartile", palette = "jco",
+    add = "reg.line",
+    cor.coef = FALSE
+    ) +
+  stat_cor(aes(color = quartile), label.x = 3) +
+    labs(title = paste("ln(CACS+1) vs", var_labels[[variable]]), x = var_labels[[variable]], y = "ln(CACS+1)", colour = paste(protein, "quartile"))
+
+# Categorical
+for (var in c("gender", "bp_med", "curr_smok", "cvhx_dm")) {
+  p = ggboxplot(graph_df,
+    x = "quartile", y = "ln_cacs",
+    color = var, palette = "jco",
+    add = "jitter",
+    cor.coef = TRUE
+    ) +
+    labs(title = paste("ln(CACS+1) vs", var_labels[[var]]), x = var_labels[[var]], y = "ln(CACS+1)", colour = paste(protein, "quartile"))
+  print(p)
+}
+
+var = "gender"
+protein = "IGFBP3"
+ggboxplot(graph_df,
+    x = "quartile", y = "ln_cacs",
+    color = var, palette = "jco",
+    add = "jitter",
+    cor.coef = TRUE
+    ) +
+    labs(title = paste("ln(CACS+1) vs", var_labels[[var]]), x = paste(protein, "quartile"), y = "ln(CACS+1)", colour = var_labels[[var]])
+
+
+```
+
+ANCOVA Test for the relationship between ln(CACS+1) and a risk score component, split by quartiles of a protein.
+
+```{r}
+protein = "IGLV7-43;IGLV7-46"
+graph_df = quartile_proteins(prot_patient_df, protein)
+# ANCOVA Test w/ middle quartiles
+for (var in c("age", "Chol_mgdl", "HDL_mgdl", "sbp", "bp_med", "curr_smok", "cvhx_dm", "gender")) {
+  # Dynamically create formula
+  formula <- as.formula(paste("ln_cacs ~", var, "*quartile"))
+  # Fit the model
+  model <- lm(formula, data = graph_df)
+  print(var)
+  print(summary(model))
+}
+
+model = lm(ln_cacs ~ age*quartile, graph_df)
+model = lm(ln_cacs ~ Chol_mgdl*quartile, graph_df)
+model = lm(ln_cacs ~ HDL_mgdl*quartile, graph_df)
+model = lm(ln_cacs ~ sbp*quartile, graph_df)
+model = lm(ln_cacs ~ bp_med*quartile, graph_df)
+model = lm(ln_cacs ~ curr_smok*quartile, graph_df)
+model = lm(ln_cacs ~ cvhx_dm*quartile, graph_df)
+model = lm(ln_cacs ~ gender*quartile, graph_df)
+summary(model)
+
+# ANCOVA Test w/o middle quartiles
+graph_df_ext = graph_df %>% filter(quartile %in% c("1", "4"))
+model = lm(ln_cacs ~ age + gender + HDL_mgdl*quartile, graph_df_ext)
+model = lm(ln_cacs ~ sbp*quartile, graph_df_ext)
+model = lm(ln_cacs ~ bp_med*quartile, graph_df_ext)
+model = lm(ln_cacs ~ curr_smok*quartile, graph_df_ext)
+model = lm(ln_cacs ~ cvhx_dm*quartile, graph_df_ext)
+model = lm(ln_cacs ~ gender*quartile, graph_df_ext)
+summary(model)
+```
+
+```{r}
 hist(prot_patient_df %>% filter(consensus_class == "resilient") %>% pull(`IGLV7-43;IGLV7-46`))
 ```
 
@@ -1934,29 +2212,31 @@ p = EnhancedVolcano(
   lab = rownames(topTable(constrast_fit, n=500)),
   x = "logFC",
   y = "adj.P.Val",
-  title = "Resilient vs Reference",
+  #title = "Resilient vs Reference",
+  title = NULL,
   FCcutoff = 0.10,
   pCutoff = 0.05,
   labSize = 6,
   xlim = c(-0.5,0.5),
   ylim = c(0, 3),
   drawConnectors = TRUE,
-  subtitle = "",
+  subtitle = NULL,
 )
 
 ggsave("resilient_reference_volcano.png", plot = p, width = 12, height = 8, dpi = 300)
 
 p = EnhancedVolcano(
-  topTable(constrast_fit, n=500),
-  lab = rownames(topTable(constrast_fit, n=500)),
+  topTable(constrast_fit, n=1000),
+  lab = rownames(topTable(constrast_fit, n=1000)),
   x = "logFC",
   y = "adj.P.Val",
-  title = "Susceptible vs Reference",
+  #title = "Susceptible vs Reference",
+  title = NULL,
   FCcutoff = 0.10,
   pCutoff = 0.05,
   labSize = 6,
   xlim = c(-0.5,0.5),
-  ylim = c(0, 3),
+  ylim = c(0, 4),
   drawConnectors = TRUE,
   subtitle = "",
 )
@@ -2054,6 +2334,9 @@ topTable(constrast_fit)
 library(gtsummary)
 library(writexl)
 
+library(labelled)
+
+
 colnames(pheno_df)
 
 pheno_df = pheno_df %>%
@@ -2062,8 +2345,22 @@ pheno_df = pheno_df %>%
     gensini > 0 ~ 1
   ))
 
-pheno_df = pheno_df %>%
-  merge(score_df, by="record_id")
+pheno_df_tbl_summary = pheno_df %>%
+  merge(score_df, by="record_id") %>%
+  mutate(SMuRFless = ifelse(smurfs == 0, 1, 0)) %>%
+  mutate(
+    cvhx_htn = as.factor(cvhx_htn),
+    cvhx_dm = as.factor(cvhx_dm),
+    cvhx_hcl_sr = as.factor(cvhx_hcl_sr),
+    signif_smok = as.factor(signif_smok),
+    curr_smok = as.factor(curr_smok),
+    anti_coag = as.factor(anti_coag),
+    anti_plt = as.factor(anti_plt),
+    statin = as.factor(statin),
+    bblocker = as.factor(bblocker),
+    ace_arb = as.factor(ace_arb),
+    fh_ihd = as.factor(fh_ihd),
+  )
 
 rsk_factors <- c("age","smurfs","cvhx_htn","cvhx_dm","cvhx_hcl_sr",
               "signif_smok", "curr_smok", "anti_coag",
@@ -2071,18 +2368,47 @@ rsk_factors <- c("age","smurfs","cvhx_htn","cvhx_dm","cvhx_hcl_sr",
               "bmi", "fh_ihd", "gender")
 
 
-gt_res <- pheno_df %>%
+pheno_df_tbl_summary = pheno_df_tbl_summary %>%
+  #mutate(gender = factor(gender, levels=c(1,2), labels=c('Male', 'Female'))) %>%
+  set_variable_labels(
+    gensini_bin = "Gensini Bin",
+    gender = "Sex",
+    age = "Age, years",
+    bmi = "BMI, kg/m^2",
+    cvhx_htn = "Hypertension",
+    cvhx_dm = "Diabetes",
+    cvhx_hcl_sr = "Hyperlipidemia",
+    curr_smok = "Current smoking",
+    signif_smok = "Significant smoking history (> 10 pack years)",
+    anti_coag = "Anticoagulants",
+    fh_ihd = "Significant family history of ischaemic heart disease",
+    #mhx_arthritis = "History of arthritis (rheumatoid arthritis, gout, other.)?",
+    anti_plt = "Antiplatelets",
+    statin = "Statin",
+    bblocker = "Beta-blocker",
+    ace_arb = "ACE inhibitor / Angiotensin Receptor Blocker",
+    #antiinflammatory = "Anti-inflammatory?",
+    smurfs = "SMuRFs",
+    SMuRFless = "SMuRFless")
+
+
+gt_res <- pheno_df_tbl_summary %>%
   dplyr::select(all_of(c("gensini_bin", rsk_factors, "smurfs", "consensus_class"))) %>%
-  mutate(SMuRFless = ifelse(smurfs == 0, 1, 0)) %>%
   tbl_summary(by=consensus_class) %>% 
   add_n() %>%
   add_overall() %>%
-  add_p() %>% # test for a difference between groups
+  add_p(smurfs ~ "fisher.test", test.args = smurfs ~ list(simulate.p.value=TRUE)) %>%
+  #add_p() %>% # test for a difference between groups
   modify_header(label = "**Consensus Class**") # update the column header
 
 gt_res %>%
   gtsummary::as_tibble() %>% 
   writexl::write_xlsx(., "summary_table.xlsx")
+
+# Export Gtres as pdf
+gt_res %>%
+  as_gt() %>%
+  gtsave("summary_table.pdf")
 
 print(gt_res)
 ```
