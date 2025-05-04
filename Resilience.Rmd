@@ -48,8 +48,7 @@ load("MultiAssayExperiment_20220816.RData")
 
 
 data_folder = "M:/Github-Version-Control-Projects/BioHEART-Summer-Project/Data"
-BioHRT_dat = readxl::read_excel(file.path(data_folder,
-                                         "DL4_20230831-BL_Imaging-Omics-20240116_SHU.xlsx"), "nolabel")
+BioHRT_dat = readxl::read_excel(file.path(data_folder, "DL4_20230831-BL_Imaging-Omics-20240116_SHU.xlsx"), "nolabel")
 load("FRS_data.RData")
 ```
 
@@ -69,7 +68,11 @@ BioHRT_dat %>% filter(disc_1000 == 1)
 ```{r}
 head(BioHRT_dat)
 BioHRT_dat = BioHRT_dat %>%
-  rename(gender = sex) 
+  rename(gender = sex)
+
+# Print record_id with no maximum output
+
+BioHRT_dat %>% select(record_id, cacs, cacs_pct, gender) %>% write.csv("record_id.csv", row.names = FALSE)
 ```
 
 
@@ -247,6 +250,7 @@ Important Recoding Decisions
 ```{r}
 
 pheno_df = BioHRT_dat %>%
+  # IMPORTANT: FILTERS ONLY DISCOVERY 1000
   filter(disc_1000 == 1) %>%
   # remove where gender or cac or cacs_pct not recorded
   drop_na(gender, cacs, cacs_pct) %>%
@@ -1782,6 +1786,10 @@ score_df %>%
 
 ```{r, warning=FALSE}
 
+
+
+# From the BioHEART MAE
+
 prot_exp = longFormat(bioheart_mae[,,'Proteomics'],
                  colDataCols = c("age", "smurfs", "cacs", "cacs_pct", "gensini"))
 
@@ -1808,6 +1816,88 @@ prot_df = data.frame(prot_exp) %>%
 
 ```
 
+Comparing the BioHEART dataset I inherited to the new dataset from a datalock. Not exactly sure why they are different.
+
+```{r}
+# From the Data Lock
+
+df1 = BioHRT_dat %>% select(-c( bioheart_id, clinical_site, disc_1000, r1000, dup_enrolment, dup_enrolment_num, age, age_f, gender, ethcat, ethcat_dual, height, weight, bmi, smurfs, cvhx_dm, diabetes_type, diabetes_years, diabetes_notes, cvhx_htn, cvhx_htn_notes, cvhx_hcl_sr_or_statin, cvhx_hcl_sr, cvhx_hcl_notes, cvhx_angina, cvhx_angina_notes, cvhx_mi, cvhx_mi_notes, cvhx_rhythm_svt, cvhx_rhythm_aflutter, cvhx_rhythm_af, cvhx_rhythm_notes, cvhx_hf, cvhx_hf_notes, cvhx_stent, cvhx_stent_notes, cvhx_cabg, cvhx_cabg_notes, cvhx_heartsx_other, cvhx_heartsx_other_desc, cvhx_cardiacprob_other, cvhx_cardiacprob_other_desc, mhx_arthritis, mhx_arthritis_ra, mhx_arthritis_osteo, mhx_arthritis_gout, mhx_arthritis_other, mhx_arthritis_other_desc, mhx_arthritis_notes, mhx_osteoporosis_osteopenia, mhx_osteoporosis_notes, mhx_stroke, mhx_stroke_notes, mhx_pad, mhx_pad_notes, mhx_dvt_pe, mhx_dvt_pe_notes, mhx_kidney, mhx_kidney_notes, mhx_other, mhx_other_desc, fh_ihd, fh_ihd_sex, fh_ihd_age, fh_clottingdisorders, fh_clottingdisorders_desc, medication_yn, noac, warfarin, anti_coag, asa, clopidogrel, ticagrelor, prasugrel, anti_plt, statin, ezetimibe, pcsk9, fibrate, niacin, babr, plant_sterol, lipid_lowering_unknown, bblocker, ace_arb, ace_i, arb, ccb, diuretic, diur_loop, diur_thiazide, diur_k, diur_non_thiazide, diur_unk, anti_arrhythmic, ivabradine, ppi, antiinflammatory, anti_diab, metformin, sglt2, glp, dpp4, su, insulin, diab_unk, specific_medication, smoking_status, signif_smok, curr_smok, pack_years, years_quit_smoking, drinking_status, drinks_per_week, years_abstinence, primary_occupation, exposure_to_heavy_metals, specific_heavy_metal, city_lived_in_longest, post_code, pet_owner, pet_type, sx_cp, sx_sob, sx_palp, sx_fatigue, sx_other, sx_other_desc, sx_acute, sx_ed, sbp, dbp, hr, stat_rate_ctrl, creatinine, egfr, ctca_ind_gen_cv_assessment, ctca_ind_sx, ctca_ind_ecg, ctca_ind_fh_ihd, ctca_ind_congenital_coronary, ctca_ind_surg, ctca_ind_other, ctca_ind_other_desc, bloods_fast, withdraw_no_fu, withdraw_full, cacs_iapl1, cacs_pct_pooled_iapl1, cacs, cacs_pct, gensini, mgens, sps_v, sps_d, mha, apoa1, apoa2, tc, ldl, hdl, tgl, nt_bnp, bnp, gal3, hs_trop, cl, hco3, cr, crp, glucose, k, lpa, na, urea))
+
+
+df2 = prot_df %>% select(-c(age, smurfs, cacs, cacs_pct, gensini))
+
+
+library(dplyr)
+
+# Standardize column names
+names(df1) <- tolower(names(df1))
+names(df2) <- tolower(names(df2))
+
+# Identify matching columns (excluding ID columns)
+common_cols <- intersect(setdiff(names(df1), "record_id"), setdiff(names(df2), "primary"))
+
+# Join by ID
+merged <- df1 %>%
+  rename(id = record_id) %>%
+  inner_join(df2 %>% rename(id = primary), by = "id", suffix = c("_df1", "_df2"))
+
+# Add match flags
+for (col in common_cols) {
+  merged[[paste0(col, "_match")]] <- merged[[paste0(col, "_df1")]] != merged[[paste0(col, "_df2")]]
+}
+
+# Keep rows where at least one mismatch
+mismatched_rows <- merged %>%
+  filter(if_any(ends_with("_match"), ~ . == TRUE))
+
+# Rearranged output: ID, then alternating df1 / df2 columns for each variable
+side_by_side_cols <- c("id", unlist(lapply(common_cols, function(col) {
+  c(paste0(col, "_df1"), paste0(col, "_df2"))
+})))
+
+output <- mismatched_rows %>% select(all_of(side_by_side_cols))
+
+print(output)
+
+
+# Prepare long format for plotting
+plot_df <- merged %>%
+  select(id, all_of(unlist(lapply(common_cols, function(col) c(paste0(col, "_df1"), paste0(col, "_df2")))))) %>%
+  pivot_longer(
+    cols = -id,
+    names_to = c("metabolite", "source"),
+    names_pattern = "(.*)_(df1|df2)",
+    values_to = "value"
+  ) %>%
+  pivot_wider(
+    names_from = source,
+    values_from = value
+  )
+
+# Take only first 5 metabolites
+first5 <- unique(plot_df$metabolite)[1:9]
+plot_subset <- filter(plot_df, metabolite %in% first5)
+
+# Plot
+plots <- lapply(first5, function(met) {
+  ggplot(filter(plot_subset, metabolite == met), aes(x = df1, y = df2)) +
+    geom_point(alpha = 0.7) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+    labs(title = paste("Scatter plot of:", met),
+         x = "df1 value",
+         y = "df2 value") +
+    theme_minimal()
+})
+
+# Display plots
+library(gridExtra)
+grid.arrange(grobs = plots, ncol = 3)
+colnames(output)
+
+write.csv(df2, "proteomics.csv")
+
+```
+
 ##### Differential Expression Analysis
 
 ```{r, warning=FALSE}
@@ -1829,9 +1919,9 @@ fit = lmFit(lm_df, design)
 fit = eBayes(fit)
 topTable(fit)
 
-CM = makeContrasts(consensus_classresilient = consensus_classresilient, levels = design)
+#CM = makeContrasts(consensus_classresilient = consensus_classresilient, levels = design)
 #CM = makeContrasts(consensus_classcompare = consensus_classsusceptible - consensus_classresilient, levels = design)
-#CM = makeContrasts(consensus_classsusceptible = consensus_classsusceptible, levels = design)
+CM = makeContrasts(consensus_classsusceptible = consensus_classsusceptible, levels = design)
 constrast_fit = contrasts.fit(fit, contrast = CM)
 constrast_fit = eBayes(constrast_fit)
 topTable(constrast_fit, n=500)
@@ -1841,8 +1931,21 @@ table(score_df$consensus_class)
 prot_patient_df %>%
   summarise(mean(GC))
 ```
+Find zeros
 
 ```{r}
+zero_test = prot_df %>% select(-c(primary, age, smurfs, cacs, cacs_pct, gensini))
+colSums(zero_test == 0, na.rm = TRUE)
+
+```
+
+
+```{r}
+
+signif_igs = c("IGLV7-43;IGLV7-46", "IGHM", "IGKV2-29;IGKV2-30;IGKV2D-29", "IGKV2-29;IGKV2D-29")
+
+# Immunoglobulins vs CACS Percentile
+
 prot_patient_df %>%
   select(cacs_pct, signif_igs, consensus_class, average_norm_score) %>%
   pivot_longer(names_to = "protein", values_to = "value", -c(consensus_class, cacs_pct, average_norm_score)) %>%
@@ -1854,9 +1957,6 @@ prot_patient_df %>%
   labs(title = "Immunoglobulins vs CACS Percentile", x = "CACS Percentile", y = "Immunoglobulins")
 
 
-signif_igs = c("IGLV7-43;IGLV7-46", "IGHM", "IGKV2-29;IGKV2-30;IGKV2D-29", "IGKV2-29;IGKV2D-29")
-
-
 prot_patient_df %>%
   select(cacs_pct, `IGLV7-43;IGLV7-46`, consensus_class, average_norm_score) %>%
   filter(consensus_class == "resilient") %>%
@@ -1866,12 +1966,25 @@ prot_patient_df %>%
   theme_bw() +
   labs(title = "Immunoglobulins vs Average Normalised Score", x = "Average Normalised Score", y = "Immunoglobulins")
 
+# Immunoglobulins vs Average Normalised Score
+
 prot_patient_df %>%
   select(cacs_pct, signif_igs, consensus_class, average_norm_score) %>%
   pivot_longer(names_to = "protein", values_to = "value", -c(consensus_class, cacs_pct, average_norm_score)) %>%
   filter(consensus_class == "resilient") %>%
   ggplot() +
   aes(x = average_norm_score, y = value, color = protein) +
+  geom_point() +
+  theme_bw() +
+  labs(title = "Immunoglobulins vs Average Normalised Score", x = "Average Normalised Score", y = "Immunoglobulins")
+
+
+prot_patient_df %>%
+  select(cacs_pct, signif_igs, consensus_class, average_norm_score) %>%
+  pivot_longer(names_to = "protein", values_to = "value", -c(consensus_class, cacs_pct, average_norm_score)) %>%
+  filter(consensus_class %in% c("resilient", "susceptible")) %>%
+  ggplot() +
+  aes(x = average_norm_score, y = value, color = consensus_class, shape = protein) +
   geom_point() +
   theme_bw() +
   labs(title = "Immunoglobulins vs Average Normalised Score", x = "Average Normalised Score", y = "Immunoglobulins")
@@ -1901,9 +2014,111 @@ prot_patient_df %>%
   cor() %>%
   corrplot::corrplot(method = "number", type = "upper", tl.col = "black", tl.srt = 45)
 
+# Immunoglobulins vs ln(CACS+1)
+
+prot_patient_df %>%
+  select(cacs, signif_igs, consensus_class, average_norm_score) %>%
+  pivot_longer(names_to = "protein", values_to = "value", -c(consensus_class, cacs, average_norm_score)) %>%
+  filter(consensus_class %in% c("resilient", "susceptible")) %>%
+  ggplot() +
+  aes(x = log(cacs+1), y = value, colour = consensus_class) +
+  facet_wrap(~protein, scales = "free") +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +
+  theme_bw() +
+  labs(title = "Immunoglobulins vs ln(CACS+1)", x = "ln(CACS+1)", y = "Immunoglobulins")
+
+library(ggpubr)
+library(ggthemes)
+
+# Immunoglobulins vs ln(CACS+1)
+
+prot_patient_df %>%
+  select(cacs, signif_igs, consensus_class, average_norm_score) %>%
+  pivot_longer(names_to = "protein", values_to = "value", -c(consensus_class, cacs, average_norm_score)) %>%
+  filter(consensus_class %in% c("resilient", "susceptible")) %>%
+  mutate(ln_cacs = log(cacs+1)) %>%
+  ggscatter(
+    x = "ln_cacs", y = "value",
+    color = "consensus_class", palette = "jco",
+    cor.coef = TRUE
+    ) +
+    geom_smooth(method = "lm", color = "black") +
+    facet_wrap(~protein, scales = "free") +
+    labs(title = "Immunoglobulins vs ln(CACS+1)", x = "ln(CACS+1)", y = "Immunoglobulins")
+
+# Immunoglobulins vs Average Normalised Score
+
+prot_patient_df %>%
+  select(cacs_pct, signif_igs, consensus_class, average_norm_score) %>%
+  pivot_longer(names_to = "protein", values_to = "value", -c(consensus_class, cacs_pct, average_norm_score)) %>%
+  filter(consensus_class %in% c("resilient", "susceptible")) %>%
+  ggscatter(
+    x = "average_norm_score", y = "value",
+    color = "consensus_class", palette = "jco",
+    cor.coef = TRUE
+    ) +
+    geom_smooth(method = "lm", color = "black") +
+    facet_wrap(~protein, scales = "free") +
+    labs(title = "Immunoglobulins vs Average Normalised Score", x = "Average Normalised Score", y = "Immunoglobulins")
+```
+
+
+Immunoglobulins Analysis
+
+```{r}
+is_outlier <- function(x) {
+  return(x < quantile(x, 0.25) - 1.5 * IQR(x) | x > quantile(x, 0.75) + 1.5 * IQR(x))
+}
+
+prot_patient_df %>%
+  select(record_id, cacs_pct, signif_igs, consensus_class, average_norm_score) %>%
+  filter(consensus_class %in% c("resilient", "reference", "susceptible")) %>%
+  pivot_longer(names_to = "protein", values_to = "value", -c(record_id, consensus_class, cacs_pct, average_norm_score)) %>%
+  mutate(outlier = ifelse(is_outlier(value), record_id, as.numeric(NA))) %>%
+  ggplot() +
+  aes(x = consensus_class, y = value, color = consensus_class) +
+  facet_wrap(~protein) +
+  geom_boxplot(notch = TRUE) +
+  stat_summary(fun = mean, geom = "point", shape = 20, size = 3, color = "black", position = position_dodge(width = 0.75)) +
+  geom_text(aes(label = outlier), na.rm = TRUE, hjust = -0.3) +
+  theme_bw() +
+  labs(title = "Immunoglobulins vs Average Normalised Score", x = "Average Normalised Score", y = "Immunoglobulins")
+
+# Outlier Plot for Immunoglobulins
+prot_patient_df %>%
+  select(record_id, cacs_pct, signif_igs, consensus_class, average_norm_score) %>%
+  filter(consensus_class %in% c("resilient", "reference", "susceptible")) %>%
+  pivot_longer(names_to = "protein", values_to = "value", -c(record_id, consensus_class, cacs_pct, average_norm_score)) %>%
+  mutate(
+    outlier_flag = ifelse(is_outlier(value), "outlier", "normal"),
+    outlier_label = ifelse(outlier_flag == "outlier", record_id, NA)
+  ) %>%
+  ggplot(aes(x = consensus_class, y = value, color = consensus_class)) +
+  facet_wrap(~protein) +
+  geom_boxplot(notch = TRUE, outlier.shape = NA) +
+  geom_jitter(aes(shape = outlier_flag), alpha = 0.7, size = 2, width = 0.2) +
+  geom_text(aes(label = outlier_label), 
+            na.rm = TRUE,
+            position = position_jitter(width = 0.2, height = 0), 
+            hjust = -0.3, size = 4) +
+  stat_summary(fun = mean, geom = "point", shape = 20, size = 3, color = "black", position = position_dodge(width = 0.75)) +
+  scale_shape_manual(values = c("normal" = 16, "outlier" = 17)) +
+  theme_bw() +
+  labs(title = "Immunoglobulins vs Average Normalised Score", 
+       x = "Consensus Class", 
+       y = "Immunoglobulin Value")
+
+
+# Correlation between Immunoglobulins
+prot_patient_df %>%
+  select(signif_igs) %>%
+  cor() %>%
+  corrplot::corrplot(method = "number", type = "upper", tl.col = "black", tl.srt = 45)
 
 
 
+# Log(CACS+1) vs Average Normalised Score
 score_df %>%
   select(cacs, average_norm_score, consensus_class) %>%
   ggplot() +
@@ -1912,8 +2127,11 @@ score_df %>%
   theme_bw()
 
 ```
-```{r}
 
+
+
+```{r}
+BioHRT_dat %>% filter(bioheart_id == "CT_1067") %>% select(record_id, cacs, cacs_pct, gensini, age, gender, smurfs, bmi, cvhx_dm, cvhx_htn, cvhx_mi, cvhx_hcl_sr, mhx_other_desc, fh_ihd, fh_ihd_sex, fh_ihd_age, ace_arb, arb, statin, diuretic, signif_smok, pack_years, sbp, dbp, hr, lpa)
 hist(prot_patient_df %>% filter(consensus_class == "resilient") %>% pull(`IGLV7-43;IGLV7-46`))
 ```
 
@@ -2005,6 +2223,11 @@ write.csv(export, "resilient_smurfless.csv")
 
 #### CyTOF
 
+```{r}
+score_df %>% pull(record_id)
+```
+
+
 ```{r, warning=FALSE}
 # Picks the first assay rlmSampleAllShort_H_batch
 exp = longFormat(bioheart_mae[,,'CyTOF'],
@@ -2044,6 +2267,13 @@ constrast_fit = eBayes(constrast_fit)
 topTable(constrast_fit)
 
 
+```
+
+
+
+```{r}
+# Export score_df as .csv
+write.csv(score_df, "score_df.csv", row.names = FALSE)
 ```
 
 
@@ -2288,6 +2518,8 @@ constrast_fit = eBayes(constrast_fit)
 
 topTable(constrast_fit)
 ```
+
+
 
 ##### dat-FRS
 
