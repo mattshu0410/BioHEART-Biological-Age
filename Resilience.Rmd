@@ -57,6 +57,7 @@ data_folder = "/Users/matthewshu/Documents/GitHub-Projects/BioHEART Summer Proje
 
 BioHRT_dat = readxl::read_excel(file.path(data_folder,
                                          "DL4_20230831-BL_Imaging-Omics-20240116_SHU.xlsx"), "nolabel")
+
 load("FRS_data.RData")
 ```
 
@@ -260,6 +261,8 @@ Important Recoding Decisions
 pheno_df = BioHRT_dat %>%
   # IMPORTANT: FILTERS ONLY DISCOVERY 1000
   filter(disc_1000 == 1) %>%
+  
+  
   # remove where gender or cac or cacs_pct not recorded
   drop_na(gender, cacs, cacs_pct) %>%
   # tc and hdl non-zero
@@ -884,7 +887,7 @@ score_df = score_df %>% drop_na(cacs, average_norm_score)
 zeroinflmodel = zeroinfl(100*cacs ~ average_norm_score | average_norm_score, data = score_df, dist = "negbin")
 summary(zeroinflmodel)
 
-score_df %>% select(record_id, average_norm_score) %>% filter(is.na(average_norm_score)
+score_df %>% select(record_id, average_norm_score) %>% filter(is.na(average_norm_score))
                                                               
 score_df %>% filter(record_id == 1209)
 pheno_df %>% filter(record_id == 1209)
@@ -1221,6 +1224,694 @@ p = gridExtra::grid.arrange(grobs = plots, ncol = 2, nrow = 2)
 ggsave("myplot.png", plot = p, width = 12, height = 8, dpi = 300)
 ```
 
+
+### Exploring ZINB Risk Score
+
+```{r}
+
+t = pheno_df %>%
+  left_join(score_df %>% select(record_id, cacs_riskscorecond_pct), by = c("record_id")) %>%
+  drop_na(cacs_riskscorecond_pct) %>%
+  mutate(cent_cacs_riskscorecond_pct = cacs_riskscorecond_pct - mean(cacs_riskscorecond_pct, na.rm = TRUE))
+
+plot(t$cacs_riskscorecond_pct - mean(t$cacs_riskscorecond_pct, na.rm = TRUE), t$cacs)
+
+# If these are columns in a data frame called 'df'
+str(t[c("gender", "age", "tc", "hdl", "lipid_med", 
+         "sbp", "bp_med", "curr_smok", "cvhx_dm")])
+
+t = t %>% 
+  left_join(prot_df %>% select(-c(age, smurfs, cacs, cacs_pct, gensini)) , by = c("record_id" = "primary")) %>%
+  filter(record_id != 1067)
+
+
+plot(t$cacs_riskscorecond_pct, t$ITIH3)
+```
+
+```{r}
+library(tidyverse)
+library(pwr)
+
+
+# Function to calculate F-statistic using built-in ANOVA
+calculate_f_statistic <- function(resilient_scores, reference_scores, susceptible_scores) {
+  
+  # Create a data frame with all scores and group labels
+  all_data <- data.frame(
+    score = c(resilient_scores, reference_scores, susceptible_scores),
+    group = factor(c(rep("resilient", length(resilient_scores)),
+                     rep("reference", length(reference_scores)),
+                     rep("susceptible", length(susceptible_scores))))
+  )
+  
+  # Perform ANOVA using built-in function
+  anova_result <- aov(score ~ group, data = all_data)
+  
+  # Extract F-statistic from ANOVA summary
+  f_stat <- summary(anova_result)[[1]][["F value"]][1]
+  
+  return(f_stat)
+}
+
+
+# Function to calculate power at fixed Cohen's D with unequal sample sizes
+calculate_power_at_effect_size <- function(n1, n2, cohens_d = 1.5, alpha = 0.05) {
+  # Use power analysis to find power at specified effect size for unequal sample sizes
+  result <- pwr.t2n.test(n1 = n1, n2 = n2, d = cohens_d, sig.level = alpha, 
+                        alternative = "two.sided")
+  return(result$power)
+}
+
+# Main analysis function
+analyze_thresholds <- function(data, score_col, thresholds, effect_size = 1.5, n_tests = 2) {
+  
+  results <- tibble(
+    threshold = numeric(0),
+    n_resilient = numeric(0),
+    n_reference = numeric(0),
+    n_susceptible = numeric(0),
+    f_statistic = numeric(0),
+    power_res_ref = numeric(0),
+    power_sus_ref = numeric(0),
+    avg_power = numeric(0),
+    power_res_ref_adjusted = numeric(0),
+    power_sus_ref_adjusted = numeric(0),
+    avg_power_adjusted = numeric(0)
+  )
+  
+  for (thresh in thresholds) {
+
+    # Define groups based on threshold
+    resilient_cutoff <- thresh
+    susceptible_cutoff <- 1 - thresh
+    
+    # Reference group: centered around 0.5 with width of thresh
+    ref_lower <- 0.5 - thresh/2
+    ref_upper <- 0.5 + thresh/2
+    
+    # Create groups
+    resilient_mask <- data[[score_col]] <= resilient_cutoff
+    susceptible_mask <- data[[score_col]] >= susceptible_cutoff
+    reference_mask <- data[[score_col]] >= ref_lower & data[[score_col]] <= ref_upper
+    
+    resilient_scores <- data[[score_col]][resilient_mask]
+    reference_scores <- data[[score_col]][reference_mask]
+    susceptible_scores <- data[[score_col]][susceptible_mask]
+    
+    # Skip if any group is too small
+    if (length(resilient_scores) < 10 || length(reference_scores) < 10 || length(susceptible_scores) < 10) {
+      next
+    }
+    
+    # Calculate F-statistic
+    f_stat <- calculate_f_statistic(resilient_scores, reference_scores, susceptible_scores)
+    
+    # Calculate power at fixed Cohen's D for both comparisons
+    alpha_unadjusted <- 0.05
+    alpha_adjusted <- alpha_unadjusted / n_tests  # Bonferroni correction
+    
+    power_res_ref <- calculate_power_at_effect_size(length(resilient_scores), length(reference_scores), effect_size, alpha_unadjusted)
+    power_sus_ref <- calculate_power_at_effect_size(length(susceptible_scores), length(reference_scores), effect_size, alpha_unadjusted)
+    avg_power <- (power_res_ref + power_sus_ref) / 2
+    
+    # Power with multiple testing correction
+    power_res_ref_adj <- calculate_power_at_effect_size(length(resilient_scores), length(reference_scores), effect_size, alpha_adjusted)
+    power_sus_ref_adj <- calculate_power_at_effect_size(length(susceptible_scores), length(reference_scores), effect_size, alpha_adjusted)
+    avg_power_adj <- (power_res_ref_adj + power_sus_ref_adj) / 2
+    
+    # Store results
+    results <- results %>% 
+      add_row(
+        threshold = thresh,
+        n_resilient = length(resilient_scores),
+        n_reference = length(reference_scores),
+        n_susceptible = length(susceptible_scores),
+        f_statistic = f_stat,
+        power_res_ref = power_res_ref,
+        power_sus_ref = power_sus_ref,
+        avg_power = avg_power,
+        power_res_ref_adjusted = power_res_ref_adj,
+        power_sus_ref_adjusted = power_sus_ref_adj,
+        avg_power_adjusted = avg_power_adj
+      )
+  }
+  
+  return(results)
+}
+
+# Run analysis with your data
+# Replace 't' with your dataframe name and 'cacs_riskscorecond_pct' with your score column
+thresholds <- seq(0.05, 0.30, by = 0.01)
+
+# Run with your actual data
+# Make sure your dataframe 't' has the column 'cacs_riskscorecond_pct'
+# You can adjust the effect_size parameter (default is 1.5) and n_tests (default is 2)
+results <- analyze_thresholds(t, "cacs_riskscorecond_pct", thresholds, effect_size = 0.5, n_tests = 259)
+
+# Alternative: if you want to test with simulated data first, uncomment below:
+# set.seed(123)
+# example_data <- tibble(cacs_riskscorecond_pct = runif(970))
+# results <- analyze_thresholds(example_data, "cacs_riskscorecond_pct", thresholds, effect_size = 1.5, n_tests = 2)
+
+# Create the dual-axis plot with both unadjusted and adjusted power
+p1 <- ggplot(results, aes(x = threshold)) +
+  geom_line(aes(y = f_statistic, color = "F-statistic"), size = 1.2) +
+  geom_point(aes(y = f_statistic, color = "F-statistic"), size = 2) +
+  scale_y_continuous(
+    name = "F-statistic",
+    sec.axis = sec_axis(trans = ~ . * max(results$avg_power) / max(results$f_statistic),
+                       name = "Power (at Cohen's d = 3.5)")
+  ) +
+  # geom_line(aes(y = avg_power * max(f_statistic) / max(avg_power), 
+  #               color = "Power (unadjusted)"), size = 1.2) +
+  # geom_point(aes(y = avg_power * max(f_statistic) / max(avg_power), 
+  #                color = "Power (unadjusted)"), size = 2) +
+  geom_line(aes(y = avg_power_adjusted * max(f_statistic) / max(avg_power), 
+                color = "Power (adjusted)"), size = 1.2) +
+  geom_point(aes(y = avg_power_adjusted * max(f_statistic) / max(avg_power), 
+                 color = "Power (adjusted)"), size = 2) +
+  scale_color_manual(values = c("F-statistic" = "blue", 
+                               # "Power (unadjusted)" = "red", 
+                               "Power (adjusted)" = "darkred")) +
+  labs(
+    #title = "Threshold Optimization: F-statistic vs Statistical Power",
+    #subtitle = "F-statistic measures inter-group variance relative to intra-group variance\nPower represents ability to detect Cohen's d = 1.5 effect (with/without multiple testing correction)",
+    x = "Threshold (percentile cutoff for resilient/susceptible groups)",
+    color = "Metric"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(size = 14, face = "bold"),
+    plot.subtitle = element_text(size = 10),
+    axis.title.y.left = element_text(color = "blue"),
+    axis.title.y.right = element_text(color = "red")
+  ) +
+  geom_vline(xintercept = 0.20, linetype = "dashed", alpha = 0.7, color = "gray50") #+
+  # annotate("text", x = 0.21, y = max(results$f_statistic) * 0.9, 
+  #          label = "Current\nThreshold\n(20%)", hjust = 0, size = 3)
+
+print(p1)
+
+ggsave("threshold_analysis_plot.png", plot = p1, width = 6, height = 4, dpi = 300)
+# Print summary table
+cat("\nSummary of threshold analysis:\n")
+print(results %>% 
+  filter(threshold %in% c(0.10, 0.15, 0.20, 0.25, 0.30)) %>%
+  select(threshold, n_resilient, n_susceptible, f_statistic, avg_power, avg_power_adjusted) %>%
+  mutate(across(where(is.numeric), round, 3)))
+
+# Show the optimal threshold based on F-statistic
+optimal_threshold <- results$threshold[which.max(results$f_statistic)]
+cat(paste("\nOptimal threshold based on maximum F-statistic:", optimal_threshold, "\n")) 
+
+# Show current threshold performance
+current_threshold_row <- results %>% filter(abs(threshold - 0.20) < 0.005)
+if (nrow(current_threshold_row) > 0) {
+  cat(paste("F-statistic at current threshold (0.20):", round(current_threshold_row$f_statistic, 3), "\n"))
+  cat(paste("Power at current threshold (Cohen's d = 1.5, unadjusted):", round(current_threshold_row$avg_power, 3), "\n"))
+  cat(paste("Power at current threshold (Cohen's d = 1.5, adjusted):", round(current_threshold_row$avg_power_adjusted, 3), "\n"))
+}
+```
+```{r}
+# Compare susceptible and reference groups
+t.test(cacs ~ consensus_class, 
+       data = score_df %>% filter(consensus_class %in% c("susceptible", "reference")))
+
+t.test(ascvd_10y_accaha ~ consensus_class, 
+       data = score_df %>% filter(consensus_class %in% c("susceptible", "reference")))
+
+t.test(IGFALS ~ cacs_act,nri_df)
+```
+
+```{r}
+library(tidyverse)
+library(cluster)
+library(factoextra)
+library(umap)
+library(fmsb)
+library(gridExtra)
+library(RColorBrewer)
+
+# Function to prepare data for clustering
+prepare_clustering_data <- function(data) {
+  # Scale all variables for clustering
+  data_scaled <- scale(data)
+  
+  return(list(
+    original = data,
+    scaled = data_scaled
+  ))
+}
+
+# Function to determine optimal number of clusters
+find_optimal_clusters <- function(data_scaled, max_k = 8) {
+  # Elbow method
+  wss <- map_dbl(1:max_k, ~{
+    kmeans(data_scaled, centers = .x, nstart = 20)$tot.withinss
+  })
+  
+  # Silhouette method
+  sil_scores <- map_dbl(2:max_k, ~{
+    km <- kmeans(data_scaled, centers = .x, nstart = 20)
+    sil <- silhouette(km$cluster, dist(data_scaled))
+    mean(sil[, 3])
+  })
+  
+  # Plot both methods
+  p1 <- tibble(k = 1:max_k, wss = wss) %>%
+    ggplot(aes(k, wss)) +
+    geom_line() + geom_point() +
+    labs(title = "Elbow Method", x = "Number of clusters", y = "Within-cluster sum of squares")
+  
+  p2 <- tibble(k = 2:max_k, silhouette = sil_scores) %>%
+    ggplot(aes(k, silhouette)) +
+    geom_line() + geom_point() +
+    labs(title = "Silhouette Method", x = "Number of clusters", y = "Average silhouette width")
+  
+  
+  # Return optimal k based on silhouette
+  optimal_k <- which.max(sil_scores) + 1
+  # In find_optimal_clusters, return the plots:
+  return(list(optimal_k = optimal_k, plots = grid.arrange(p1, p2, ncol = 2)))
+
+}
+
+# Function to perform k-means clustering
+perform_clustering <- function(data_scaled, k = 3) {
+  set.seed(123)
+  kmeans_result <- kmeans(data_scaled, centers = k, nstart = 25)
+  return(kmeans_result)
+}
+
+# Function to create radar chart data
+create_radar_data <- function(data_original, clusters, k) {
+  # Calculate cluster summaries
+  cluster_summaries <- tibble()
+  
+  for (i in 1:k) {
+    cluster_data <- data_original[clusters == i, ]
+    
+    # Calculate means for continuous variables and proportions for binary
+    summary_row <- tibble(
+      cluster = paste("Cluster", i),
+      age = mean(cluster_data$age, na.rm = TRUE),
+      gender_male_prop = mean(cluster_data$gender, na.rm = TRUE),
+      ldl = mean(cluster_data$ldl, na.rm = TRUE),
+      lipid_med_prop = mean(cluster_data$lipid_med, na.rm = TRUE),
+      sbp = mean(cluster_data$sbp, na.rm = TRUE),
+      bp_med_prop = mean(cluster_data$bp_med, na.rm = TRUE),
+      cvhx_dm_prop = mean(cluster_data$cvhx_dm, na.rm = TRUE),
+      curr_smok_prop = mean(cluster_data$curr_smok, na.rm = TRUE),
+      n = nrow(cluster_data)
+    )
+    
+    cluster_summaries <- bind_rows(cluster_summaries, summary_row)
+  }
+  
+  return(cluster_summaries)
+}
+
+# MODIFIED: Function to normalize data for radar charts using full cohort min/max
+normalize_for_radar <- function(cluster_summaries, full_cohort_data = NULL) {
+  # Variables to normalize (continuous variables that need scaling)
+  vars_to_normalize <- c("age", "ldl", "sbp")
+  
+  # Binary/proportion variables that are already 0-1 (just use their actual values)
+  binary_vars <- c("gender_male_prop", "lipid_med_prop", "bp_med_prop", "curr_smok_prop", "cvhx_dm_prop")
+  
+  radar_data <- cluster_summaries %>%
+    select(-cluster, -n)
+  
+  # If full cohort data is provided, use it for normalization bounds
+  if (!is.null(full_cohort_data)) {
+    cat("Using full cohort data for normalization bounds\n")
+    
+    # Calculate min/max from full cohort for continuous variables
+    for (var in vars_to_normalize) {
+      if (var %in% names(radar_data) && var %in% names(full_cohort_data)) {
+        # Get min/max from full cohort
+        min_val <- min(full_cohort_data[[var]], na.rm = TRUE)
+        max_val <- max(full_cohort_data[[var]], na.rm = TRUE)
+        
+        cat(paste("Variable", var, "- Full cohort range: [", 
+                  round(min_val, 2), ",", round(max_val, 2), "]\n"))
+        cat(paste("Subset range: [", 
+                  round(min(radar_data[[var]], na.rm = TRUE), 2), ",",
+                  round(max(radar_data[[var]], na.rm = TRUE), 2), "]\n"))
+        
+        # Check if variable has any variance (avoid division by zero)
+        if (max_val != min_val) {
+          radar_data[[var]] <- (radar_data[[var]] - min_val) / (max_val - min_val)
+        } else {
+          # If no variance, set all values to 0.5 (middle of 0-1 scale)
+          radar_data[[var]] <- 0.5
+        }
+        
+        cat(paste("Normalized cluster values for", var, ":", 
+                  paste(round(radar_data[[var]], 3), collapse = ", "), "\n\n"))
+      }
+    }
+  } else {
+    # Fallback to original method if no full cohort data provided
+    cat("No full cohort data provided - using subset data for normalization\n")
+    
+    # Normalize continuous variables to 0-1 scale using subset data
+    for (var in vars_to_normalize) {
+      if (var %in% names(radar_data)) {
+        min_val <- min(radar_data[[var]], na.rm = TRUE)
+        max_val <- max(radar_data[[var]], na.rm = TRUE)
+        
+        # Check if variable has any variance (avoid division by zero)
+        if (max_val != min_val) {
+          radar_data[[var]] <- (radar_data[[var]] - min_val) / (max_val - min_val)
+        } else {
+          # If no variance, set all values to 0.5 (middle of 0-1 scale)
+          radar_data[[var]] <- 0.5
+        }
+      }
+    }
+  }
+  
+  # For binary/proportion variables, they're already 0-1, so just keep their actual mean values
+  # No normalization needed - their actual proportions are meaningful
+  
+  # Check for any remaining non-numeric columns and handle them
+  for (col in names(radar_data)) {
+    if (!is.numeric(radar_data[[col]])) {
+      warning(paste("Non-numeric column detected:", col, "- converting to numeric"))
+      radar_data[[col]] <- as.numeric(as.factor(radar_data[[col]]))
+    }
+  }
+    
+  # Add min and max rows for radar chart
+  max_row <- rep(1, ncol(radar_data))
+  min_row <- rep(0, ncol(radar_data))
+  
+  radar_data_final <- rbind(max_row, min_row, radar_data)
+  rownames(radar_data_final) <- c("Max", "Min", paste("Cluster", 1:nrow(radar_data)))
+  radar_data_final <- radar_data_final[, c(1, rev(2:ncol(radar_data_final)))]
+  return(radar_data_final)
+}
+
+
+# Function to create radar charts
+create_radar_charts <- function(radar_data, k) {
+  colors <- brewer.pal(max(3, k), "Set1")[1:k]
+  
+  # Debug: Check data structure
+  cat("Radar data structure:\n")
+  print(str(radar_data))
+  cat("Radar data summary:\n")
+  print(summary(radar_data))
+  
+  # Ensure all data is numeric
+  radar_data <- apply(radar_data, 2, as.numeric)
+  
+  # Check for any NaN or infinite values
+  if (any(is.na(radar_data)) || any(is.infinite(radar_data))) {
+    cat("Warning: Found NA or infinite values in radar data\n")
+    radar_data[is.na(radar_data)] <- 0.5
+    radar_data[is.infinite(radar_data)] <- 0.5
+  }
+  
+  # Create individual radar charts for each cluster
+  par(mfrow = c(1, k), mar = c(1, 1, 2, 1))
+  
+  for (i in 1:k) {
+    data_subset <- radar_data[c(1, 2, i + 2), , drop = FALSE]  # Max, Min, and cluster i
+    
+    # Debug: Print subset data
+    cat(paste("Cluster", i, "data:\n"))
+    print(data_subset)
+    
+    tryCatch({
+      radarchart(data.frame(data_subset),
+                 axistype = 1,
+                 pcol = colors[i],
+                 pfcol = paste0(colors[i], "40"),
+                 plwd = 2,
+                 plty = 1,
+                 cglcol = "grey",
+                 cglty = 1,
+                 axislabcol = "black",
+                 caxislabels = seq(0, 1, 0.25),
+                 cglwd = 0.8,
+                 vlcex = 0.8,
+                 vlabels = c("Age", "Curr Smoking","DM","BP Med","SBP","Lipid Med","LDL","Sex (M)"),
+                 title = paste("Cluster", i))
+    }, error = function(e) {
+      cat(paste("Error creating radar chart for cluster", i, ":", e$message, "\n"))
+      # Create empty plot as fallback
+      plot.new()
+      title(paste("Cluster", i, "- Error"))
+    })
+  }
+}
+
+# Function to perform ANOVA analysis
+perform_anova_analysis <- function(data_original, clusters) {
+  # Add cluster assignments to data
+  data_with_clusters <- data_original %>%
+    mutate(cluster = as.factor(clusters))
+  
+  # Initialize results tibble with proper structure
+  anova_results <- tibble(
+    variable = character(),
+    f_statistic = numeric(),
+    p_value = numeric(),
+    significant = logical()
+  )
+  
+  # Variables to test
+  vars_to_test <- c("age", "ldl", "sbp",
+                   "gender", "lipid_med", "bp_med", "curr_smok", "cvhx_dm")
+  
+  for (var in vars_to_test) {
+    formula_str <- paste(var, "~ cluster")
+    anova_result <- aov(as.formula(formula_str), data = data_with_clusters)
+    anova_summary <- summary(anova_result)
+    
+    f_stat <- anova_summary[[1]][["F value"]][1]
+    p_value <- anova_summary[[1]][["Pr(>F)"]][1]
+    
+    anova_results <- anova_results %>%
+      add_row(
+        variable = var,
+        f_statistic = f_stat,
+        p_value = p_value,
+        significant = p_value < 0.05
+      )
+  }
+  
+  # Sort by F-statistic to see which variables drive differences most
+  anova_results <- anova_results %>%
+    arrange(desc(f_statistic)) %>%
+    mutate(
+      p_value_formatted = ifelse(p_value < 0.001, "<0.001", 
+                                ifelse(p_value < 0.01, "<0.01",
+                                      ifelse(p_value < 0.05, "<0.05", 
+                                            round(p_value, 3))))
+    )
+  
+  return(anova_results)
+}
+
+# Function to create UMAP visualization
+create_umap_visualization <- function(data_scaled, clusters, k) {
+  # Perform UMAP
+  set.seed(123)
+  umap_result <- umap(data_scaled)
+  
+  # Create UMAP plot
+  umap_df <- tibble(
+    UMAP1 = umap_result$layout[, 1],
+    UMAP2 = umap_result$layout[, 2],
+    cluster = as.factor(clusters)
+  )
+  
+  colors <- brewer.pal(max(3, k), "Set1")[1:k]
+  
+  p <- ggplot(umap_df, aes(x = UMAP1, y = UMAP2, color = cluster)) +
+    geom_point(size = 2, alpha = 0.7) +
+    scale_color_manual(values = colors) +
+    labs(title = "UMAP Visualization of Clinical Phenotype Clusters",
+         subtitle = paste("K-means clustering with k =", k),
+         x = "UMAP Dimension 1",
+         y = "UMAP Dimension 2") +
+    theme_minimal() +
+    theme(legend.title = element_text(face = "bold"))
+  
+  return(p)
+}
+
+# NEW FUNCTION: Create PCA visualization with cluster circles
+create_pca_visualization <- function(data_scaled, clusters, k) {
+  # Perform PCA
+  pca_result <- prcomp(data_scaled, center = FALSE, scale = FALSE)
+  
+  # Create PCA dataframe
+  pca_df <- tibble(
+    PC1 = pca_result$x[, 1],
+    PC2 = pca_result$x[, 2],
+    cluster = as.factor(clusters)
+  )
+  
+  # Get same colors as other plots
+  colors <- brewer.pal(max(3, k), "Set1")[1:k]
+  
+  # Calculate cluster centers and confidence ellipses
+  cluster_centers <- pca_df %>%
+    group_by(cluster) %>%
+    summarise(
+      center_PC1 = mean(PC1),
+      center_PC2 = mean(PC2),
+      .groups = 'drop'
+    )
+  
+  # Calculate explained variance for axis labels
+  var_explained <- summary(pca_result)$importance[2, 1:2]
+  pc1_var <- round(var_explained[1] * 100, 1)
+  pc2_var <- round(var_explained[2] * 100, 1)
+  
+  # Create the plot
+  p <- ggplot(pca_df, aes(x = PC1, y = PC2, color = cluster)) +
+    geom_point(size = 2, alpha = 0.7) +
+    # Add confidence ellipses (circles) around clusters
+    stat_ellipse(aes(fill = cluster), 
+                 type = "norm", 
+                 level = 0.68,  # 1 standard deviation
+                 alpha = 0.2, 
+                 geom = "polygon") +
+    # Add cluster centers
+    # geom_point(data = cluster_centers, 
+    #            aes(x = center_PC1, y = center_PC2, color = cluster),
+    #            size = 4, 
+    #            shape = 4, 
+    #            stroke = 2,
+    #            show.legend = FALSE) +
+    scale_color_manual(values = colors) +
+    scale_fill_manual(values = colors) +
+    labs(title = "PCA Visualization of Clinical Phenotype Clusters",
+         subtitle = paste("K-means clustering with k =", k),
+         x = paste0("PC1 (", pc1_var, "% variance)"),
+         y = paste0("PC2 (", pc2_var, "% variance)")) +
+    theme_minimal() +
+    theme(legend.title = element_text(face = "bold"))
+  
+  return(list(plot = p, pca_result = pca_result, pca_df = pca_df))
+}
+
+# Main analysis function
+run_clustering_analysis <- function(data, k = NULL, full_cohort_data = NULL, save_plots = FALSE, plot_prefix = "cacs_high_risk", plot_dir = "plots") {
+  cat("=== Clinical Phenotype Clustering Analysis ===\n\n")
+  
+  # 1. Prepare data
+  cat("1. Preparing data for clustering...\n")
+  prepared_data <- prepare_clustering_data(data)
+  
+  # 2. Find optimal clusters if k not specified
+  if (is.null(k)) {
+    cat("2. Finding optimal number of clusters...\n")
+    cluster_results <- find_optimal_clusters(prepared_data$scaled)
+    print(cluster_results$plots)  # Explicitly print
+    k <- cluster_results$optimal_k
+    cat(paste("Optimal number of clusters:", k, "\n\n"))
+  }
+  
+  # 3. Perform clustering
+  cat("3. Performing k-means clustering...\n")
+  kmeans_result <- perform_clustering(prepared_data$scaled, k)
+  
+  # 4. Create cluster summaries
+  cat("4. Creating cluster summaries...\n")
+  cluster_summaries <- create_radar_data(prepared_data$original, kmeans_result$cluster, k)
+  
+  # Print numerical summaries
+  cat("\n=== CLUSTER SUMMARIES ===\n")
+  print(cluster_summaries)
+  
+  # 5. Create radar charts
+  cat("\n5. Creating radar charts...\n")
+  radar_data <- normalize_for_radar(cluster_summaries, full_cohort_data)
+  if (save_plots) {
+    png(file.path(plot_dir, paste0(plot_prefix, "_radar_charts.png")), 
+        width = 10, height = 3, units = "in", res = 300)
+  }
+  create_radar_charts(radar_data, k)
+  if (save_plots) {
+    dev.off()
+    cat("Saved radar charts\n")
+  }
+  
+  # 6. Perform ANOVA analysis
+  cat("\n6. Performing ANOVA analysis...\n")
+  anova_results <- perform_anova_analysis(prepared_data$original, kmeans_result$cluster)
+  
+  cat("\n=== ANOVA RESULTS (Variables driving cluster differences) ===\n")
+  print(anova_results)
+  
+  # 7. Create UMAP visualization
+  cat("\n7. Creating UMAP visualization...\n")
+  umap_plot <- create_umap_visualization(prepared_data$scaled, kmeans_result$cluster, k)
+  if (save_plots) {
+    ggsave(file.path(plot_dir, paste0(plot_prefix, "_umap.png")), 
+           umap_plot, width = 10, height = 8, dpi = 300)
+    cat("Saved UMAP plot\n")
+  }
+  print(umap_plot)
+  
+  # 8. Create PCA visualization
+  cat("\n8. Creating PCA visualization...\n")
+  pca_results <- create_pca_visualization(prepared_data$scaled, kmeans_result$cluster, k)
+  if (save_plots) {
+    ggsave(file.path(plot_dir, paste0(plot_prefix, "_pca.png")), 
+           pca_results$plot, width = 10, height = 8, dpi = 300)
+    cat("Saved PCA plot\n")
+  }
+  print(pca_results$plot)
+  
+  # Return results
+  return(list(
+    kmeans_result = kmeans_result,
+    cluster_summaries = cluster_summaries,
+    anova_results = anova_results,
+    umap_plot = umap_plot,
+    pca_plot = pca_results$plot,
+    pca_result = pca_results$pca_result,
+    pca_df = pca_results$pca_df,
+    prepared_data = prepared_data
+  ))
+}
+
+
+# Run the analysis with your data
+# Uncomment the line below to run with your actual data
+# results <- run_clustering_analysis(t, k = 3)
+
+
+cols = c("gender", "age", "ldl", "lipid_med", "sbp", "bp_med", "curr_smok", "cvhx_dm")
+
+# Prepare full cohort data for normalization (same preprocessing as subset)
+full_cohort_normalized <- t[, cols] %>%
+  mutate(gender = ifelse(gender == "male", 1, 0))
+
+# Susceptible
+susceptible = t[t$cacs_riskscorecond_pct>0.8,cols] %>%
+  mutate(gender = ifelse(gender == "male", 1, 0))
+results <- run_clustering_analysis(susceptible, full_cohort_data = full_cohort_normalized, save_plots = TRUE, plot_dir = "susceptible", 
+                                   plot_prefix = "susceptible" )
+
+# Resilient
+resilient = t[t$cacs_riskscorecond_pct < 0.2,cols] %>%
+  mutate(gender = ifelse(gender == "male", 1, 0))
+results <- run_clustering_analysis(resilient, full_cohort_data = full_cohort_normalized, save_plots = TRUE, plot_dir = "resilient", 
+                                   plot_prefix = "resilient" )
+ str(susceptible)
+
+```
+
+
 ### Classifying by Z-Score binned by Risk Score (Alternative)
 
 ```{r}
@@ -1383,11 +2074,11 @@ score_df$consensus_class = case_when(
 
 score_df %>% select(consensus_class, cacs_riskscorecond_pct)
 
-ggplot(score_df, aes(x = average_norm_score, y = cacs, color = consensus_class)) +
+ggplot(score_df, aes(x = average_norm_score, y = log(cacs+1), color = consensus_class)) +
   geom_point() +
   scale_color_manual(values = c("resilient" = "green", "reference" = "blue", "susceptible" = "red", "ignore" = "grey50")) +
   theme_bw() +
-  labs(title = "CACS vs Average Normalised Score", x = "Average Normalised Score", y = "CACS", color = "Consensus Class")
+  labs(title = "CACS vs Average Normalised Score", x = "Average Normalised Risk Score", y = "log(CACS+1)", color = "Classification")
 
 
 
@@ -1419,6 +2110,35 @@ table(score_df$consensus_class)
 
 
 write.csv(score_df, "resilience.csv")
+
+
+# Modify the factor levels in your dataframe first
+score_df$consensus_class_modified <- recode(score_df$consensus_class,
+                                            "reference" = "Reference",
+                                            "susceptible" = "Susceptible",
+                                            "resilient" = "Other (Excluded)",
+                                            "ignore" = "Other (Excluded)")
+
+# Plot
+p = ggplot(score_df, aes(x = average_norm_score, 
+                     y = log(cacs + 1), 
+                     color = consensus_class_modified)) +
+  geom_point() +
+  scale_color_manual(values = c("Reference" = "#1F77B4",        # pastel blue
+                                "Susceptible" = "#D62727",      # pastel red
+                                "Other (Excluded)" = "grey70")) +
+  theme_bw() +
+  theme(panel.grid = element_blank(),                # remove gridlines
+        panel.border = element_blank(),              # remove all borders
+        axis.line.x.bottom = element_line(),         # keep bottom x-axis line
+        axis.line.y.left = element_line(),           # keep left y-axis line
+        axis.line.x.top = element_blank(),           # remove top axis line
+        axis.line.y.right = element_blank()) +       # remove right axis line
+  labs(x = "Average Normalised Risk Score", 
+       y = "log(CACS + 1)", 
+       color = "Classification")
+
+ggsave("susceptibility.png", p, width = 8, height = 6, dpi = 300)
 ```
 ### Classifying by Zero-Inflated Regression Percentiles by Individual Variables
 
@@ -1941,12 +2661,12 @@ fit = eBayes(fit)
 topTable(fit)
 
 
-CM = makeContrasts(consensus_classresilient = consensus_classresilient, levels = design)
+#CM = makeContrasts(consensus_classresilient = consensus_classresilient, levels = design)
 #CM = makeContrasts(consensus_classcompare = consensus_classsusceptible - consensus_classresilient, levels = design)
 CM = makeContrasts(consensus_classsusceptible = consensus_classsusceptible, levels = design)
 constrast_fit = contrasts.fit(fit, contrast = CM)
 constrast_fit = eBayes(constrast_fit)
-topTable(constrast_fit, n=500)
+topTable(constrast_fit, n=500,  confint=TRUE)
 table(score_df$consensus_class)
 
 
@@ -2395,6 +3115,1416 @@ summary(model)
 hist(prot_patient_df %>% filter(consensus_class == "resilient") %>% pull(`IGLV7-43;IGLV7-46`))
 ```
 
+The following analysis is me trying to figure out if
+a) if the susceptible people are SMuRFless,
+
+Can we reduce the number needed to scan to something meaningful when we enrich the scanning cohort. 
+
+```{r}
+nri_df %>%
+  filter(consensus_class == "susceptible") %>%
+  filter(ascvd_10y_accaha < 5) %>%
+  select(cacs_act, IGFALS_quart)
+
+nri_df %>%
+  filter(consensus_class %in% c("susceptible", "reference")) %>%
+  filter(smurfs == 0) %>%
+  ggplot(aes(x = as.factor(cacs_act), y = IGFALS)) +
+  geom_boxplot(notch = TRUE, alpha = 0.7, outlier.shape = NA) +
+  geom_jitter(width = 0.2, alpha = 0.6, size = 1) +
+  facet_wrap(~ gender) +
+  theme_bw() +
+  labs(x = "CACS Activity", y = "IGFBP3") +
+  scale_x_discrete(labels = c("0" = "No", "1" = "Yes"))
+
+nri_df %>%
+  filter(consensus_class %in% c("susceptible", "reference")) %>%
+  ggplot() +
+  geom_histogram(aes(x = IGFALS, fill = as.factor(cacs_act)), bins = 30, position = "identity", alpha = 0.5)
+  #select(cacs, cacs_act, gender, age, Chol_mgdl, HDL_mgdl, sbp, curr_smok, cvhx_dm)
+```
+
+
+```{r}
+library(mcca)
+
+library(pROC)
+
+dim(score_df)
+
+nri_df = score_df %>%
+  select(record_id, grep("ordernorm", colnames(score_df)), average_norm_score, grep("cacs_risk", colnames(score_df)), consensus_class) %>%
+  left_join(pheno_df, by="record_id") %>%
+  mutate(
+    cacs_act = ifelse(cacs > 100, 1, 0)
+  ) %>%
+  inner_join(prot_df %>% select(-c(age, smurfs, cacs, cacs_pct, gensini)), by=c('record_id'='primary')) %>%
+  filter(ascvd_10y_accaha < 5) #%>%
+  #filter(gender == "male")
+  #filter(ctca_ind_sx != 1)
+  #filter(smurfs == 0)
+  # mutate(IGFALS_quart = as.factor(ntile(IGFALS, 4)),
+  #        F2_quart = as.factor(ntile(F2,4)),
+  #        APOL1_quart = as.factor(ntile(APOL1, 4)),
+  #        IGFBP3_quart = as.factor(ntile(IGFBP3, 4))
+  #        )  %>%
+  # rowwise() %>%
+  # mutate(sus_count = sum(c(IGFALS_quart, F2_quart, APOL1_quart, IGFBP3_quart) == "1"),
+  #        sus = as.numeric(sus_count >= 1)) %>%  # 1 if 2 or more, 0 otherwise
+  # ungroup()
+
+table(nri_df$cacs_act)
+
+
+
+# Fit baseline model using binomial logistic regression
+model1 <- glm(cacs_act ~ age + Chol_mgdl + HDL_mgdl + 
+              sbp + curr_smok + cvhx_dm, 
+              data = nri_df, 
+              family = binomial)
+
+
+# Fit improved model using binomial logistic regression  
+model2 <- glm(cacs_act ~ age + Chol_mgdl + HDL_mgdl + 
+              sbp + curr_smok + cvhx_dm + IGFALS, 
+              data = nri_df, 
+              family = binomial)
+
+model3 <- glm(cacs_act ~ IGFALS,
+              data = nri_df, 
+              family = binomial)
+
+# View model summaries
+summary(model1)
+summary(model2)
+summary(model3)
+
+# Get predicted probabilities
+prob1 <- predict(model1, type = "response")  # Returns P(Y=1)
+prob2 <- predict(model2, type = "response")  # Returns P(Y=1)
+prob3 <- predict(model3, type = "response")  # Returns P(Y=1)
+
+# Convert to probability matrices for NRI (if needed)
+prob1_matrix <- cbind(1-prob1, prob1)  # [P(Y=0), P(Y=1)]
+prob2_matrix <- cbind(1-prob2, prob2)  # [P(Y=0), P(Y=1)]
+prob3_matrix <- cbind(1-prob3, prob3)  # [P(Y=0), P(Y=1)]
+
+# Create ROC objects
+roc1 <- roc(nri_df$cacs_act, prob1)
+roc2 <- roc(nri_df$cacs_act, prob2)
+auc_diff <- auc(roc2) - auc(roc1)
+
+# 3. Brier Score comparison
+# Essentially the mean squared error between predicted probabilities and actual outcomes.
+# Lower is better (0 = perfect prediction, 1 = worst possible)
+brier1 <- mean((nri_df$cacs_act - predict(model1, type="response"))^2)
+brier2 <- mean((nri_df$cacs_act - predict(model2, type="response"))^2)
+brier_diff <- brier1 - brier2
+
+# Calculate NRI using the probability matrices
+nri_result <- nri(y = nri_df$cacs_act,
+                  m1 = prob1_matrix,
+                  m2 = prob2_matrix,
+                  method = "prob",
+                  k = 2)
+
+
+
+print(paste("NRI value:", nri_result))
+print(paste("AUC difference:", auc_diff))
+
+# Plot ROC curves
+ggroc(list("Without IGFALS" = roc1, "With IGFALS" = roc2)) +
+  geom_abline(intercept = 1, slope = 1, linetype = "dashed", alpha = 0.7) +
+  labs(title = "ROC Curves: Models With and Without IGFALS",
+       x = "Specificity (1 - False Positive Rate)",
+       y = "Sensitivity (True Positive Rate)") +
+  theme_minimal() +
+  scale_color_manual(values = c("blue", "red")) +
+  theme(legend.title = element_blank())
+
+# Create DCA plot with both models
+dca(cacs_act ~ prob1 + prob2 + prob3,
+    data = nri_df,
+    thresholds = seq(0, 0.30, 0.01),  # Adjust range as appropriate
+    label = list(
+      prob1 = "Baseline Model",
+      prob2 = "Model + IGFALS",
+      prob3 = "IGFALS Only"
+    )) %>%
+  plot(smooth = FALSE)
+
+paste0(score_df$record_id, collapse = ", ")
+```
+
+
+```{r}
+
+library(dcurves)
+library(dplyr)
+
+# Build simple logistic models for each biomarker
+igfals_model <- glm(cacs_act ~ IGFALS, data = nri_df, family = binomial)
+f2_model <- glm(cacs_act ~ F2, data = nri_df, family = binomial)
+apol1_model <- glm(cacs_act ~ APOL1, data = nri_df, family = binomial)
+igfbp3_model <- glm(cacs_act ~ IGFBP3, data = nri_df, family = binomial)
+
+# Add predictions to your dataset
+nri_df <- nri_df %>%
+  mutate(
+    igfals_prob = predict(igfals_model, type = "response"),
+    f2_prob = predict(f2_model, type = "response"),
+    apol1_prob = predict(apol1_model, type = "response"),
+    igfbp3_prob = predict(igfbp3_model, type = "response")
+  )
+
+# Create DCA with all four biomarkers
+dca_result <- dca(
+  data = nri_df,
+  formula = cacs_act ~ igfals_prob + f2_prob + apol1_prob + igfbp3_prob,
+  thresholds = seq(0.05, 0.30, 0.01),
+  label = list(
+    igfals_prob = "IGFALS",
+    f2_prob = "F2", 
+    apol1_prob = "APOL1",
+    igfbp3_prob = "IGFBP3"
+  )
+)
+
+# Plot all together
+plot(dca_result, smooth = FALSE)
+```
+
+Rather than including all those covariates which in theory should be selected out if you are already selecting based on risk score.
+
+```{r}
+library(rsample)
+library(dplyr)
+library(broom)
+library(dcurves)
+library(pROC)
+library(mcca)
+library(ggplot2)
+library(boot)
+library(tidyr)  # Add this for pivot_wider
+
+# Set seed for reproducibility
+set.seed(2026)
+
+# Configuration
+biomarkers <- c("IGFALS")
+dca_thresholds <- seq(0, 0.30, 0.01)
+cv_folds <- 3
+cv_repeats <- 10
+
+# Create cross-validation samples
+cross_validation_samples <- rsample::vfold_cv(nri_df, v = cv_folds, repeats = cv_repeats)
+
+# SINGLE CROSS-VALIDATION RUN - Collect all data needed
+cat("Performing single cross-validation run for all biomarkers...\n")
+
+cv_all_results <- cross_validation_samples %>%
+  rowwise() %>%
+  mutate(
+    # Build models for ALL biomarkers on analysis set
+    models = {
+      analysis_data <- rsample::analysis(splits)
+      assessment_data <- rsample::assessment(splits)
+      
+      # Fit models for each biomarker
+      model_results <- purrr::map(biomarkers, ~{
+        # Only the Protein
+        formula <- as.formula(paste("cacs_act ~", .x))
+        # With other covariates but too many for cv
+        # formula <- as.formula(paste("cacs_act ~ age + Chol_mgdl + HDL_mgdl + 
+        #       sbp + curr_smok + cvhx_dm +", .x))
+        model <- glm(formula, data = analysis_data, family = binomial)
+        
+        # Get predictions for assessment set
+        preds <- predict(model, newdata = assessment_data, type = "response")
+        
+        # Return assessment data with predictions
+        assessment_data %>%
+          select(record_id, cacs_act) %>%
+          mutate(
+            biomarker = .x,
+            cv_pred = preds
+          )
+      })
+      
+      # Combine all biomarker results for this fold
+      bind_rows(model_results)
+    } %>% list()
+  ) %>%
+  ungroup() %>%
+  pull(models) %>%
+  bind_rows()
+
+# Average predictions across all CV folds for each patient-biomarker combination
+cv_all_results_avg <- cv_all_results %>%
+  group_by(record_id, biomarker) %>%
+  summarise(
+    cacs_act = cacs_act[1],  # Take first value instead of using first()
+    cv_pred = mean(cv_pred, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Reshape to wide format for analysis
+df_cv_wide <- cv_all_results_avg %>%
+  select(record_id, biomarker, cv_pred) %>%
+  pivot_wider(
+    names_from = biomarker,
+    values_from = cv_pred,
+    names_prefix = "cv_"
+  ) %>%
+  left_join(
+    cv_all_results_avg %>% 
+      select(record_id, cacs_act) %>% 
+      distinct(),
+    by = "record_id"
+  )
+
+cat("Cross-validation complete. Analyzing results...\n")
+
+# 1. DCA ANALYSIS
+cat("Creating DCA plot...\n")
+dca_formula <- as.formula(paste("cacs_act ~", paste0("cv_", biomarkers, collapse = " + ")))
+
+dca_labels <- setNames(
+  as.list(paste(biomarkers, "(CV)")),
+  paste0("cv_", biomarkers)
+)
+
+dca_result <- dcurves::dca(
+  data = df_cv_wide,
+  formula = dca_formula,
+  thresholds = dca_thresholds,
+  label = dca_labels
+)
+
+dca_plot <- dca_result %>%
+  plot(smooth = TRUE) +
+  theme_bw() +
+  labs(title = "Cross-Validated Decision Curve Analysis",
+       subtitle = "Individual Biomarkers for CACS Prediction") +
+  theme(legend.position = "bottom")
+
+print(dca_plot)
+
+# Extract the DCA data
+dca_data <- dca_result$dca
+
+# 1. Standardize net benefit (relative to maximum across all strategies)
+max_net_benefit <- max(dca_data$net_benefit, na.rm = TRUE)
+dca_data$standardized_net_benefit <- dca_data$net_benefit / max_net_benefit
+
+# 2. Create cost:benefit ratios for specific thresholds
+# Define the exact ratios you want to show
+target_ratios <- data.frame(
+  ratio_label = c("1:100", "1:19", "1:15", "1:10", "1:5", "1:3", "2:5"),
+  threshold = c(0.01, 0.05, 0.063, 0.091, 0.167, 0.25, 0.286)
+)
+
+# Calculate thresholds from ratios: threshold = ratio/(1+ratio)
+# For 1:19 -> 1/20 = 0.05
+# For 1:15 -> 1/16 = 0.063, etc.
+
+# Create the plot
+dca_plot_modified <- ggplot(dca_data, aes(x = threshold, y = standardized_net_benefit, color = label)) +
+  geom_smooth(method = "loess", se = FALSE, span = 0.3, 
+              aes(size = label)) +  # Add size aesthetic for line thickness
+  theme_bw() +
+  
+  # Custom color and size scales
+  scale_color_manual(values = c(
+    "Treat All" = "grey60",               # Grey for Treat All
+    "Treat None" = "black",               # Black for Treat None
+    "IGFALS (CV)" = "#1f77b4",           # Blue
+    "F2 (CV)" = "#ff7f0e",               # Orange
+    "APOL1 (CV)" = "#2ca02c",            # Green
+    "IGFBP3 (CV)" = "#d62728"            # Red
+  )) +
+  
+  scale_size_manual(values = c(
+    "Treat All" = 0.5,                   # Thin line for Treat All
+    "Treat None" = 0.5,                  # Thin line for Treat None
+    "IGFALS (CV)" = 1.2,                 # Thick line for models
+    "F2 (CV)" = 1.2,
+    "APOL1 (CV)" = 1.2,
+    "IGFBP3 (CV)" = 1.2
+  ), guide = "none") +  # Hide size legend
+  
+  # Primary x-axis (risk threshold)
+  scale_x_continuous(
+    name = "Risk Threshold",
+    labels = scales::percent_format(accuracy = 1),
+    breaks = seq(0, 0.30, 0.05),
+    sec.axis = sec_axis(
+      trans = ~ .,
+      name = "Cost:Benefit Ratio (NNT)",
+      breaks = target_ratios$threshold,
+      labels = target_ratios$ratio_label
+    )
+  ) +
+  
+  # Y-axis
+  scale_y_continuous(
+    labels = scales::comma_format(accuracy = 0.01)
+  ) +
+  ylim(-0.4,1) +
+  ylab("Standardised Net Benefit") +
+  
+  # Styling
+  labs(
+    title = "Cross-Validated Decision Curve Analysis (3 Fold, 10 Repeats) for CACS>100",
+    subtitle = "Men w/ Low-Risk (<5% on ACC/AHA 10-Year Risk)",
+    color = ""
+  ) +
+  
+  theme(
+    legend.position = "bottom",
+    axis.title.x.top = element_text(margin = margin(b = 5)),
+    axis.title.x.bottom = element_text(margin = margin(t = 5)),
+    axis.text.x.top = element_text(size = 9),
+    axis.text.x.bottom = element_text(size = 9),
+    panel.grid.minor = element_blank()
+  ) +
+  
+  # Set reasonable limits
+  coord_cartesian(xlim = c(0, 0.30))
+
+print(dca_plot_modified)
+
+# save plot as png
+ggsave("dca_plot_cv.png", plot = dca_plot_modified, width = 10, height = 6, dpi = 300)
+
+ # 2. ROC ANALYSIS
+cat("Creating ROC curves and calculating AUCs...\n")
+
+# Function to calculate AUC with CI
+calculate_auc_ci <- function(predictions, outcomes) {
+  roc_obj <- roc(outcomes, predictions)
+  auc_ci <- ci.auc(roc_obj, conf.level = 0.95)
+  
+  return(list(
+    auc = as.numeric(auc_ci[2]),
+    ci_lower = as.numeric(auc_ci[1]),
+    ci_upper = as.numeric(auc_ci[3]),
+    roc_obj = roc_obj
+  ))
+}
+
+# Calculate AUCs and prepare ROC data
+auc_results <- list()
+roc_data <- data.frame()
+
+for(biomarker in biomarkers) {
+  col_name <- paste0("cv_", biomarker)
+  auc_results[[biomarker]] <- calculate_auc_ci(df_cv_wide[[col_name]], df_cv_wide$cacs_act)
+  
+  # Prepare ROC coordinates for plotting
+  roc_coords <- coords(auc_results[[biomarker]]$roc_obj, "all", ret = c("threshold", "sensitivity", "specificity"))
+  roc_coords$biomarker <- biomarker
+  roc_data <- rbind(roc_data, roc_coords)
+}
+
+# Plot ROC curves
+roc_plot <- ggplot(roc_data, aes(x = 1 - specificity, y = sensitivity, color = biomarker)) +
+  #geom_line(size = 1) +
+  geom_smooth(method = "loess", se = FALSE, span = 0.5) +  # Smoothing
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", alpha = 0.5) +
+  theme_bw() +
+  # Match colors from DCA plot
+  scale_color_manual(values = c(
+    "IGFALS" = "#1f77b4",           # Blue
+    "F2" = "#ff7f0e",               # Orange
+    "APOL1" = "#2ca02c",            # Green
+    "IGFBP3" = "#d62728"            # Red
+  )) +
+  labs(title = "Cross-Validated ROC Curves (3 Fold, 10 Repeats) for CACS>100",
+       subtitle = "Men w/ Low-Risk (<5% on ACC/AHA 10-Year Risk)",
+       x = "1 - Specificity (False Positive Rate)",
+       y = "Sensitivity (True Positive Rate)",
+       color = "Biomarker") +
+  theme(legend.position = "bottom") +
+  coord_equal() 
+
+print(roc_plot)
+
+# Save ROC plot
+ggsave("roc_plot_cv.png", plot = roc_plot, width = 10, height = 6, dpi = 300)
+
+# Print AUC results
+cat("\nCross-Validated AUC Results:\n")
+auc_summary <- purrr::map_dfr(biomarkers, ~{
+  data.frame(
+    Biomarker = .x,
+    AUC = round(auc_results[[.x]]$auc, 3),
+    CI_Lower = round(auc_results[[.x]]$ci_lower, 3),
+    CI_Upper = round(auc_results[[.x]]$ci_upper, 3)
+  )
+}) %>%
+  mutate(AUC_CI = paste0(AUC, " (", CI_Lower, "-", CI_Upper, ")"))
+
+print(auc_summary)
+
+# 3. NRI ANALYSIS WITH BOOTSTRAP CIs
+cat("Calculating NRI with bootstrap confidence intervals...\n")
+
+# Bootstrap function for NRI
+nri_bootstrap <- function(data, indices, baseline_col, improved_col) {
+  boot_data <- data[indices, ]
+  tryCatch({
+    nri(y = boot_data$cacs_act,
+        m1 = boot_data[[baseline_col]],
+        m2 = boot_data[[improved_col]],
+        method = "prob",
+        k = 2)
+  }, error = function(e) NA)
+}
+
+# Calculate NRI for each biomarker vs "no model" (using prevalence as baseline)
+prevalence <- mean(df_cv_wide$cacs_act)
+df_cv_wide$baseline_pred <- prevalence
+
+nri_results <- list()
+for(biomarker in biomarkers) {
+  cat(paste("Calculating NRI for", biomarker, "...\n"))
+  col_name <- paste0("cv_", biomarker)
+  
+  # Main NRI calculation
+  main_nri <- nri(y = df_cv_wide$cacs_act,
+                  m1 = df_cv_wide$baseline_pred,
+                  m2 = df_cv_wide[[col_name]],
+                  method = "prob",
+                  k = 2)
+  
+  # Bootstrap for CI
+  boot_results <- boot(
+    data = df_cv_wide,
+    statistic = function(data, indices) {
+      nri_bootstrap(data, indices, "baseline_pred", col_name)
+    },
+    R = 500
+  )
+  
+  # Remove any NA values from bootstrap
+  boot_values <- boot_results$t[!is.na(boot_results$t)]
+  
+  if(length(boot_values) > 0) {
+    ci_result <- boot.ci(boot_results, type = "perc", conf = 0.95)
+    ci_lower <- ci_result$percent[4]
+    ci_upper <- ci_result$percent[5]
+  } else {
+    ci_lower <- NA
+    ci_upper <- NA
+  }
+  
+  nri_results[[biomarker]] <- list(
+    nri = main_nri,
+    ci_lower = ci_lower,
+    ci_upper = ci_upper
+  )
+}
+
+# Print NRI results
+cat("\nCross-Validated NRI Results (vs No Model):\n")
+nri_summary <- purrr::map_dfr(biomarkers, ~{
+  data.frame(
+    Biomarker = .x,
+    NRI = round(nri_results[[.x]]$nri, 3),
+    CI_Lower = round(nri_results[[.x]]$ci_lower, 3),
+    CI_Upper = round(nri_results[[.x]]$ci_upper, 3)
+  )
+}) %>%
+  mutate(NRI_CI = paste0(NRI, " (", CI_Lower, "-", CI_Upper, ")"))
+
+print(nri_summary)
+
+# 4. SUMMARY TABLE
+cat("\n=== SUMMARY RESULTS ===\n")
+summary_table <- auc_summary %>%
+  left_join(nri_summary, by = "Biomarker") %>%
+  select(Biomarker, AUC_CI, NRI_CI)
+
+print(summary_table)
+
+cat("\nAnalysis complete!\n")
+```
+Youden Index Cut-off
+```{r}
+library(cutpointr)
+cp = cutpointr(
+  data = nri_df,
+  x = IGFALS,
+  class = cacs_act,
+  subgroup = gender,
+  method = maximize_metric,
+  pos_class = 1,
+  direction = "<=",
+  metric = F1_score,
+  boot_runs = 100
+)
+summary(cp)
+plot(cp)
+
+boot_ci(cp, youden, in_bag = FALSE, alpha = 0.05)
+
+```
+
+Bootstrapped CI for NNT w/ In-Bag CIs
+
+```{r}
+library(cutpointr)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+set.seed(2026)
+
+# Set the fixed cutoff
+fixed_cutoff <- 20.6139
+n_boots <- 100
+
+# Function to calculate number needed to scan with IGFALS enrichment
+calc_nns_enriched <- function(data, cutoff) {
+  predictions <- ifelse(data$IGFALS <= cutoff, 1, 0)
+  tp <- sum(predictions == 1 & data$cacs_act == 1)
+  fp <- sum(predictions == 1 & data$cacs_act == 0)
+  if (tp == 0) return(NA)
+  nns <- (tp + fp) / tp
+  return(nns)
+}
+
+# Function to calculate number needed to scan without enrichment
+calc_nns_no_enrichment <- function(data) {
+  total_scanned <- nrow(data)
+  tp <- sum(data$cacs_act == 1)
+  if (tp == 0) return(NA)
+  nns <- total_scanned / tp
+  return(nns)
+}
+
+# No-information rate for NNS using random pairing approach
+calc_no_info_nns <- function(actual_outcomes, predictions_at_cutoff) {
+  # Create all possible combinations (random pairing)
+  combos <- crossing(actual = actual_outcomes, pred = predictions_at_cutoff)
+  
+  # Calculate NNS for each random pairing
+  tp <- sum(combos$pred == 1 & combos$actual == 1)
+  fp <- sum(combos$pred == 1 & combos$actual == 0)
+  
+  if (tp == 0) return(NA)
+  nns_ni <- (tp + fp) / tp
+  return(nns_ni)
+}
+
+# .632+ Bootstrap function (corrected)
+bootstrap_nns_632plus_corrected <- function(data, cutoff, n_boots) {
+  n <- nrow(data)
+  nns_632plus_enriched <- numeric(n_boots)
+  nns_632plus_no_enrichment <- numeric(n_boots)
+  
+  for (i in 1:n_boots) {
+    # Create bootstrap sample
+    boot_indices <- sample(1:n, n, replace = TRUE)
+    oob_indices <- setdiff(1:n, unique(boot_indices))
+    
+    # Skip if no out-of-bag observations
+    if (length(oob_indices) == 0) {
+      nns_632plus_enriched[i] <- NA
+      nns_632plus_no_enrichment[i] <- NA
+      next
+    }
+    
+    boot_data <- data[boot_indices, ]
+    oob_data <- data[oob_indices, ]
+    
+    # Calculate actual proportions (not fixed 0.632/0.368)
+    prop_oob <- nrow(oob_data) / nrow(boot_data)
+    prop_boot <- 1 - prop_oob
+    
+    ## FOR ENRICHED METHOD ##
+    # Calculate NNS on bootstrap sample (in-bag)
+    nns_boot_enriched <- calc_nns_enriched(boot_data, cutoff)
+    
+    # Calculate NNS on out-of-bag sample
+    nns_oob_enriched <- calc_nns_enriched(oob_data, cutoff)
+    
+    # Calculate no-information rate using random pairing approach
+    boot_predictions <- ifelse(boot_data$IGFALS <= cutoff, 1, 0)
+    nns_ni_enriched <- calc_no_info_nns(boot_data$cacs_act, boot_predictions)
+    
+    # Calculate overfitting rate
+    if (!is.na(nns_boot_enriched) && !is.na(nns_oob_enriched) && !is.na(nns_ni_enriched) &&
+        nns_ni_enriched != nns_boot_enriched) {
+      
+      overfit_enriched <- (nns_oob_enriched - nns_boot_enriched) / (nns_ni_enriched - nns_boot_enriched)
+      
+      # Calculate .632+ weight
+      weight_enriched <- prop_boot / (1 - (prop_oob * overfit_enriched))
+      
+      # Constrain weight to reasonable bounds
+      weight_enriched <- max(0, min(1, weight_enriched))
+      
+      # Calculate .632+ estimate
+      nns_632plus_enriched[i] <- weight_enriched * nns_boot_enriched + (1 - weight_enriched) * nns_oob_enriched
+      
+    } else {
+      nns_632plus_enriched[i] <- NA
+    }
+    
+    ## FOR NON-ENRICHED METHOD ##
+    nns_boot_no_enrichment <- calc_nns_no_enrichment(boot_data)
+    nns_oob_no_enrichment <- calc_nns_no_enrichment(oob_data)
+    
+    if (!is.na(nns_boot_no_enrichment) && !is.na(nns_oob_no_enrichment)) {
+      # For non-enriched method, use standard .632 weight since there's no model overfitting
+      weight_no_enrichment <- prop_boot
+      nns_632plus_no_enrichment[i] <- weight_no_enrichment * nns_boot_no_enrichment + 
+                                      (1 - weight_no_enrichment) * nns_oob_no_enrichment
+    } else {
+      nns_632plus_no_enrichment[i] <- NA
+    }
+  }
+  
+  return(list(enriched = nns_632plus_enriched, no_enrichment = nns_632plus_no_enrichment))
+}
+
+# Run the corrected bootstrap
+set.seed(123)
+bootstrap_results_632plus_corrected <- bootstrap_nns_632plus_corrected(nri_df, fixed_cutoff, n_boots)
+
+# Remove NA values
+nns_enriched_632plus <- bootstrap_results_632plus_corrected$enriched[!is.na(bootstrap_results_632plus_corrected$enriched)]
+nns_no_enrichment_632plus <- bootstrap_results_632plus_corrected$no_enrichment[!is.na(bootstrap_results_632plus_corrected$no_enrichment)]
+
+# Calculate confidence intervals
+ci_632plus_enriched <- quantile(nns_enriched_632plus, c(0.025, 0.975))
+ci_632plus_no_enrichment <- quantile(nns_no_enrichment_632plus, c(0.025, 0.975))
+
+# Calculate original values for comparison
+original_nns_enriched <- calc_nns_enriched(nri_df, fixed_cutoff)
+original_nns_no_enrichment <- calc_nns_no_enrichment(nri_df)
+
+# Print results
+cat("=== CORRECTED .632+ BOOTSTRAP RESULTS ===\n\n")
+cat("Fixed cutoff:", fixed_cutoff, "\n\n")
+
+cat("WITH IGFALS ENRICHMENT:\n")
+cat("Original NNS:", round(original_nns_enriched, 3), "\n")
+cat("Bootstrap mean NNS:", round(mean(nns_enriched_632plus), 3), "\n")
+cat("95% CI: [", round(ci_632plus_enriched[1], 3), ", ", round(ci_632plus_enriched[2], 3), "]\n")
+cat("Valid samples:", length(nns_enriched_632plus), "out of", n_boots, "\n\n")
+
+cat("WITHOUT ENRICHMENT:\n")
+cat("Original NNS:", round(original_nns_no_enrichment, 3), "\n")
+cat("Bootstrap mean NNS:", round(mean(nns_no_enrichment_632plus), 3), "\n")
+cat("95% CI: [", round(ci_632plus_no_enrichment[1], 3), ", ", round(ci_632plus_no_enrichment[2], 3), "]\n")
+cat("Valid samples:", length(nns_no_enrichment_632plus), "out of", n_boots, "\n\n")
+
+# Visualization
+plot_data <- data.frame(
+  NNS = c(nns_enriched_632plus, nns_no_enrichment_632plus),
+  Method = rep(c("With IGFALS Enrichment", "Without Enrichment"), 
+               c(length(nns_enriched_632plus), length(nns_no_enrichment_632plus)))
+)
+
+p <- ggplot(plot_data, aes(x = Method, y = NNS, fill = Method)) +
+  geom_boxplot(alpha = 0.7) +
+  geom_point(data = data.frame(Method = c("With IGFALS Enrichment", "Without Enrichment"),
+                               NNS = c(original_nns_enriched, original_nns_no_enrichment)), 
+             color = "red", size = 3, shape = 19) +
+  scale_fill_manual(values = c("lightblue", "lightcoral")) +
+  labs(title = "Corrected .632+ Bootstrap: NNS Distributions",
+       subtitle = "Red points show original values",
+       x = "Method",
+       y = "Number Needed to Scan") +
+  theme_minimal() +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+print(p)
+
+```
+
+NNT w/ out of bag estimate 
+```{r}
+# Set the fixed cutoff
+fixed_cutoff <- 20.6139
+
+# Number of bootstrap runs
+n_boots <- 100
+
+# Function to calculate number needed to scan with IGFALS enrichment
+calc_nns_enriched <- function(data, cutoff) {
+  # Apply cutoff (direction is "<=", so values <= cutoff are positive)
+  predictions <- ifelse(data$IGFALS <= cutoff, 1, 0)
+  
+  # Calculate confusion matrix elements
+  tp <- sum(predictions == 1 & data$cacs_act == 1)
+  fp <- sum(predictions == 1 & data$cacs_act == 0)
+  
+  # Number needed to scan = (TP + FP) / TP
+  if (tp == 0) return(NA)  # Avoid division by zero
+  nns <- (tp + fp) / tp
+  return(nns)
+}
+
+# Function to calculate number needed to scan without enrichment (scan everyone)
+calc_nns_no_enrichment <- function(data) {
+  # Without enrichment, we scan everyone, so TP + FP = total sample size
+  # and TP = total number of positive cases
+  total_scanned <- nrow(data)
+  tp <- sum(data$cacs_act == 1)
+  
+  if (tp == 0) return(NA)  # Avoid division by zero
+  nns <- total_scanned / tp
+  return(nns)
+}
+
+# Bootstrap function with out-of-bag evaluation
+bootstrap_nns_oob <- function(data, cutoff, n_boots) {
+  n <- nrow(data)
+  nns_enriched_oob <- numeric(n_boots)
+  nns_no_enrichment_oob <- numeric(n_boots)
+  
+  for (i in 1:n_boots) {
+    # Create bootstrap sample
+    boot_indices <- sample(1:n, n, replace = TRUE)
+    
+    # Identify out-of-bag observations (those NOT in the bootstrap sample)
+    oob_indices <- setdiff(1:n, unique(boot_indices))
+    
+    # Skip if no out-of-bag observations (rare but possible)
+    if (length(oob_indices) == 0) {
+      nns_enriched_oob[i] <- NA
+      nns_no_enrichment_oob[i] <- NA
+      next
+    }
+    
+    # Get out-of-bag data
+    oob_data <- data[oob_indices, ]
+    
+    # Calculate NNS with and without enrichment on out-of-bag data
+    nns_enriched_oob[i] <- calc_nns_enriched(oob_data, cutoff)
+    nns_no_enrichment_oob[i] <- calc_nns_no_enrichment(oob_data)
+  }
+  
+  return(list(enriched = nns_enriched_oob, no_enrichment = nns_no_enrichment_oob))
+}
+
+# Run bootstrap
+set.seed(123)  # For reproducibility
+bootstrap_results <- bootstrap_nns_oob(nri_df, fixed_cutoff, n_boots)
+
+# Remove any NA values and prepare data for plotting
+nns_enriched <- bootstrap_results$enriched[!is.na(bootstrap_results$enriched)]
+nns_no_enrichment <- bootstrap_results$no_enrichment[!is.na(bootstrap_results$no_enrichment)]
+
+# Calculate original NNS values on full dataset
+original_nns_enriched <- calc_nns_enriched(nri_df, fixed_cutoff)
+original_nns_no_enrichment <- calc_nns_no_enrichment(nri_df)
+
+# Calculate confidence intervals
+ci_enriched_lower <- quantile(nns_enriched, 0.025)
+ci_enriched_upper <- quantile(nns_enriched, 0.975)
+ci_no_enrichment_lower <- quantile(nns_no_enrichment, 0.025)
+ci_no_enrichment_upper <- quantile(nns_no_enrichment, 0.975)
+
+# Prepare data for ggplot
+plot_data <- data.frame(
+  NNS = c(nns_enriched, nns_no_enrichment),
+  Method = rep(c("With IGFALS Enrichment", "Without Enrichment"), 
+               c(length(nns_enriched), length(nns_no_enrichment)))
+)
+
+# Summary statistics for plotting
+summary_stats <- data.frame(
+  Method = c("With IGFALS Enrichment", "Without Enrichment"),
+  Original = c(original_nns_enriched, original_nns_no_enrichment),
+  Mean = c(mean(nns_enriched), mean(nns_no_enrichment)),
+  CI_Lower = c(ci_enriched_lower, ci_no_enrichment_lower),
+  CI_Upper = c(ci_enriched_upper, ci_no_enrichment_upper)
+)
+
+# Plot 1: Side-by-side histograms
+p1 <- ggplot(plot_data, aes(x = NNS, fill = Method)) +
+  geom_histogram(alpha = 0.7, bins = 20, position = "identity") +
+  geom_vline(data = summary_stats, aes(xintercept = Original, color = Method), 
+             linetype = "dashed", size = 1) +
+  geom_vline(data = summary_stats, aes(xintercept = CI_Lower, color = Method), 
+             linetype = "dotted", size = 0.8) +
+  geom_vline(data = summary_stats, aes(xintercept = CI_Upper, color = Method), 
+             linetype = "dotted", size = 0.8) +
+  facet_wrap(~ Method, scales = "free") +
+  scale_fill_manual(values = c("lightblue", "lightcoral")) +
+  scale_color_manual(values = c("darkblue", "darkred")) +
+  labs(title = "Out-of-Bag Bootstrap Distribution of Number Needed to Scan",
+       subtitle = "Dashed lines: Original values, Dotted lines: 95% CI bounds",
+       x = "Number Needed to Scan",
+       y = "Frequency") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# Plot 2: Box plots for comparison
+p2 <- ggplot(plot_data, aes(x = Method, y = NNS, fill = Method)) +
+  geom_boxplot(alpha = 0.7) +
+  geom_point(data = summary_stats, aes(x = Method, y = Original), 
+             color = "red", size = 3, shape = 19) +
+  scale_fill_manual(values = c("lightblue", "lightcoral")) +
+  labs(title = "Comparison of Out-of-Bag NNS Bootstrap Distributions",
+       subtitle = "Red points show original values",
+       x = "Method",
+       y = "Number Needed to Scan") +
+  theme_minimal() +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Plot 3: Density plots overlaid
+p3 <- ggplot(plot_data, aes(x = NNS, fill = Method)) +
+  geom_density(alpha = 0.6) +
+  geom_vline(data = summary_stats, aes(xintercept = Original, color = Method), 
+             linetype = "dashed", size = 1) +
+  scale_fill_manual(values = c("lightblue", "lightcoral")) +
+  scale_color_manual(values = c("darkblue", "darkred")) +
+  labs(title = "Out-of-Bag Density Comparison of NNS Bootstrap Distributions",
+       subtitle = "Dashed lines show original values",
+       x = "Number Needed to Scan",
+       y = "Density") +
+  theme_minimal()
+
+# Plot 4: Confidence intervals comparison
+p4 <- ggplot(summary_stats, aes(x = Method, y = Mean, color = Method)) +
+  geom_point(size = 4) +
+  geom_errorbar(aes(ymin = CI_Lower, ymax = CI_Upper), width = 0.2, size = 1) +
+  geom_point(aes(y = Original), shape = 17, size = 4) +
+  scale_color_manual(values = c("darkblue", "darkred")) +
+  labs(title = "Number Needed to Scan: Out-of-Bag Bootstrap Means and 95% CIs",
+       subtitle = "Circles: Bootstrap means, Triangles: Original values",
+       x = "Method",
+       y = "Number Needed to Scan") +
+  theme_minimal() +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Display plots
+print(p1)
+print(p2)
+print(p3)
+
+
+print(summary_stats)
+```
+
+Cross-Validated NNS for Biomarkers
+```{r}
+set.seed(2026)
+biomarkers <- c("IGFALS", "F2", "APOL1", "IGFBP3")
+n_cutoffs <- 100  # Number of cutoff points to evaluate
+cv_folds <- 3
+cv_repeats <- 10
+
+# Create cross-validation samples
+cross_validation_samples <- rsample::vfold_cv(nri_df, v = cv_folds, repeats = cv_repeats)
+# Function to calculate metrics for a given cutoff
+calculate_metrics <- function(predictions, actual, cutoff) {
+ pred_binary <- as.numeric(predictions <= cutoff)
+ 
+ # Confusion matrix
+ tp <- sum(pred_binary == 1 & actual == 1)
+ fp <- sum(pred_binary == 1 & actual == 0)
+ tn <- sum(pred_binary == 0 & actual == 0)
+ fn <- sum(pred_binary == 0 & actual == 1)
+ 
+ # Calculate metrics
+ sensitivity <- ifelse(tp + fn > 0, tp / (tp + fn), 0)
+ specificity <- ifelse(tn + fp > 0, tn / (tn + fp), 0)
+ youden <- sensitivity + specificity - 1
+ 
+ # NNS calculation - handle case where tp = 0
+ nns <- ifelse(tp > 0, (tp + fp) / tp, Inf)
+ 
+ 
+ 
+ return(data.frame(
+   tp = tp, fp = fp, tn = tn, fn = fn,
+   sensitivity = sensitivity,
+   specificity = specificity,
+   youden = youden,
+   nns = nns
+ ))
+}
+
+# Function to evaluate biomarker performance across cutoffs
+evaluate_biomarker_cv <- function(cv_samples, biomarker_name, outcome_col = "cacs_act") {
+  
+  results_list <- list()
+  # Get overall range for this biomarker across all CV samples
+  all_values <- cv_samples$splits %>%
+    map(~analysis(.x)) %>%
+    list_rbind() %>%
+    pull(!!biomarker_name)
+  
+  cutoff_range <- seq(min(all_values, na.rm = TRUE), 
+                     max(all_values, na.rm = TRUE), 
+                     length.out = n_cutoffs)
+  
+  # Loop through each CV fold
+  results_list <- map(1:nrow(cv_samples), ~{
+    
+    # Get training and testing data
+    train_data <- analysis(cv_samples$splits[[.x]])
+    test_data <- assessment(cv_samples$splits[[.x]])
+    
+    # Extract biomarker values and outcome for test set
+    biomarker_values <- test_data[[biomarker_name]]
+    actual_outcome <- test_data[[outcome_col]]
+    
+    # Calculate metrics for each cutoff
+    cutoff_results <- map(cutoff_range, ~{
+      metrics <- calculate_metrics(biomarker_values, actual_outcome, .x)
+      metrics$cutoff <- .x
+      metrics$cv_id <- cv_samples$id[[.x]]
+      metrics$biomarker <- biomarker_name
+      return(metrics)
+    }) %>%
+      list_rbind()
+    
+    return(cutoff_results)
+  })
+  
+  return(list_rbind(results_list))
+}
+
+# Run evaluation for all biomarkers
+cat("Evaluating biomarkers across CV folds...\n")
+all_results_list <- purrr::map(biomarkers, ~{
+ cat(paste("Processing", .x, "...\n"))
+ evaluate_biomarker_cv(cross_validation_samples, .x)
+})
+
+# Calculate baseline NNS (scanning everyone)
+baseline_nns <- nri_df %>%
+  summarise(
+    total_cases = sum(cacs_act == 1),
+    total_n = n(),
+    baseline_nns = total_n / total_cases
+  ) %>%
+  pull(baseline_nns)
+
+cat(paste("Baseline NNS (scan everyone):", round(baseline_nns, 2), "\n"))
+
+
+# Combine all results into a single dataframe
+all_results <- bind_rows(all_results_list)
+
+library(binom)
+# Aggregate counts across all CV folds for each biomarker-cutoff combination
+summary_results <- all_results %>%
+  group_by(biomarker, cutoff) %>%
+  summarise(
+    # Sum counts across all CV folds
+    total_tp = sum(tp, na.rm = TRUE),
+    total_fp = sum(fp, na.rm = TRUE),
+    total_tn = sum(tn, na.rm = TRUE),
+    total_fn = sum(fn, na.rm = TRUE),
+    .groups = 'drop'
+  ) %>%
+  mutate(
+    # Calculate metrics from aggregated counts
+    sensitivity = total_tp / (total_tp + total_fn),
+    specificity = total_tn / (total_tn + total_fp),
+    youden = sensitivity + specificity - 1,
+    ppv = total_tp / (total_tp + total_fp),
+    nns = 1 / ppv  # NNS is reciprocal of PPV
+  ) %>%
+  # Calculate confidence intervals using Wilson method
+  mutate(
+    # Sensitivity CI (Wilson method for binomial)
+    sensitivity_ci_lower = map2_dbl(total_tp, total_tp + total_fn, 
+                                   ~binom.confint(.x, .y, method = "wilson")$lower),
+    sensitivity_ci_upper = map2_dbl(total_tp, total_tp + total_fn, 
+                                   ~binom.confint(.x, .y, method = "wilson")$upper),
+    
+    # Specificity CI
+    specificity_ci_lower = map2_dbl(total_tn, total_tn + total_fp, 
+                                   ~binom.confint(.x, .y, method = "wilson")$lower),
+    specificity_ci_upper = map2_dbl(total_tn, total_tn + total_fp, 
+                                   ~binom.confint(.x, .y, method = "wilson")$upper),
+    
+    # PPV CI (for NNS calculation)
+    ppv_ci_lower = map2_dbl(total_tp, total_tp + total_fp, 
+                           ~binom.confint(.x, .y, method = "wilson")$lower),
+    ppv_ci_upper = map2_dbl(total_tp, total_tp + total_fp, 
+                           ~binom.confint(.x, .y, method = "wilson")$upper),
+    
+    # NNS CI (reciprocal of PPV CI, with bounds flipped)
+    nns_ci_lower = ifelse(ppv_ci_upper > 0, 1 / ppv_ci_upper, Inf),
+    nns_ci_upper = ifelse(ppv_ci_lower > 0, 1 / ppv_ci_lower, Inf),
+    
+    # Youden CI (using delta method approximation)
+    # Var(Se + Sp - 1) = Var(Se) + Var(Sp) assuming independence
+    sens_var = sensitivity * (1 - sensitivity) / (total_tp + total_fn),
+    spec_var = specificity * (1 - specificity) / (total_tn + total_fp),
+    youden_se = sqrt(sens_var + spec_var),
+    youden_ci_lower = youden - 1.96 * youden_se,
+    youden_ci_upper = youden + 1.96 * youden_se
+  ) %>%
+  select(-sens_var, -spec_var, -youden_se)
+
+
+# Prepare data for plotting with proper CIs
+plot_data_performance <- summary_results %>%
+  select(biomarker, cutoff, 
+         sensitivity, sensitivity_ci_lower, sensitivity_ci_upper,
+         specificity, specificity_ci_lower, specificity_ci_upper,
+         youden, youden_ci_lower, youden_ci_upper) %>%
+  pivot_longer(
+    cols = c(sensitivity, specificity, youden),
+    names_to = "metric",
+    values_to = "value"
+  ) %>%
+  mutate(
+    ci_lower = case_when(
+      metric == "sensitivity" ~ sensitivity_ci_lower,
+      metric == "specificity" ~ specificity_ci_lower,
+      metric == "youden" ~ youden_ci_lower
+    ),
+    ci_upper = case_when(
+      metric == "sensitivity" ~ sensitivity_ci_upper,
+      metric == "specificity" ~ specificity_ci_upper,
+      metric == "youden" ~ youden_ci_upper
+    ),
+    metric = case_when(
+      metric == "sensitivity" ~ "Sensitivity",
+      metric == "specificity" ~ "Specificity",
+      metric == "youden" ~ "Youden's Index"
+    ),
+    panel = "Performance Metrics"
+  )
+
+plot_data_nns <- summary_results %>%
+  filter(is.finite(nns)) %>%
+  select(biomarker, cutoff, nns, nns_ci_lower, nns_ci_upper) %>%
+  mutate(
+    metric = "Number Needed to Scan",
+    value = nns,
+    ci_lower = nns_ci_lower,
+    ci_upper = nns_ci_upper,
+    panel = "Number Needed to Scan"
+  )
+
+# Combine plot data
+plot_data_combined <- bind_rows(
+  plot_data_performance,
+  plot_data_nns
+) %>%
+  mutate(
+    biomarker = factor(biomarker, levels = biomarkers),
+    panel = factor(panel, levels = c("Performance Metrics", "Number Needed to Scan"))
+  )
+
+first_group <- all_results %>%
+  group_by(cutoff) %>%
+  group_split() %>%
+  .[[120]]
+
+hist(first_group$sensitivity)
+
+hist(nri_df$IGFALS)
+
+all_results$cutoff
+```
+
+```{r}
+show_error_bars <- TRUE 
+# Create the base plot
+p1 <- ggplot(plot_data_combined, aes(x = cutoff, y = value, color = metric)) +
+  geom_line(size = 0.8)
+
+# Conditionally add error bars
+if(show_error_bars) {
+  p1 <- p1 + 
+    geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper, fill = metric), 
+                alpha = 0.2, color = NA) +
+    scale_fill_manual(
+      values = c(
+        "Sensitivity" = "#E31A1C",
+        "Specificity" = "#1F78B4", 
+        "Youden's Index" = "#33A02C",
+        "Number Needed to Scan" = "#FF7F00"
+      ),
+      guide = "none"  # Hide fill legend since it duplicates color legend
+    )
+}
+
+# Complete the plot
+p1 <- p1 +
+  facet_grid(panel ~ biomarker, scales = "free") +
+  scale_color_manual(
+    values = c(
+      "Sensitivity" = "#E31A1C",
+      "Specificity" = "#1F78B4", 
+      "Youden's Index" = "#33A02C",
+      "Number Needed to Scan" = "#FF7F00"
+    )
+  ) +
+  labs(
+    x = "Biomarker Cutoff Value",
+    y = "Metric Value",
+    color = "Metric",
+    title = "Biomarker Performance Across Cutoff Values",
+    subtitle = paste("Cross-validated performance (", cv_folds, " folds, ", cv_repeats, " repeats)",
+                    ifelse(show_error_bars, " with 95% CI", ""), sep = "")
+  ) +
+  theme_bw() +
+  theme(
+    strip.text = element_text(size = 10, face = "bold"),
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+# Add baseline NNS line to NNS panel only
+p1 <- p1 + 
+  geom_hline(
+    data = plot_data_combined %>% filter(panel == "Number Needed to Scan"),
+    aes(yintercept = baseline_nns),
+    linetype = "dashed",
+    color = "red",
+    size = 1
+  ) +
+  geom_text(
+    data = plot_data_combined %>% 
+      filter(panel == "Number Needed to Scan") %>%
+      group_by(biomarker, panel) %>%  # Keep panel in the grouping
+      summarise(
+        cutoff_mid = mean(range(cutoff)),
+        .groups = 'drop'
+      ),
+    aes(x = cutoff_mid, y = baseline_nns * 1.1, 
+        label = paste("Baseline NNS =", round(baseline_nns, 1))),
+    color = "red",
+    size = 3,
+    hjust = 0.5,
+    inherit.aes = FALSE
+  )
+
+# Display the plot
+print(p1)
+```
+
+```{r}
+# Create a comprehensive fold mapping
+fold_mapping <- data.frame()
+
+# Just look at first repeat (first 5 folds)
+for(i in 1:5) {
+  assessment_ids <- rsample::assessment(cross_validation_samples$splits[[i]])$record_id
+  
+  fold_info <- data.frame(
+    record_id = assessment_ids,
+    fold = i,
+    repeat_num = 1,
+    role = "assessment"
+  )
+  
+  fold_mapping <- rbind(fold_mapping, fold_info)
+}
+
+# View the mapping
+print(fold_mapping)
+
+# Summary by fold
+table(fold_mapping$fold)
+
+# Check which patients with events are in which folds
+fold_mapping_with_outcome <- fold_mapping %>%
+  left_join(nri_df %>% select(record_id, cacs_act), by = "record_id")
+
+# Events per fold
+fold_mapping_with_outcome %>%
+  group_by(fold) %>%
+  summarise(
+    n_subjects = n(),
+    n_events = sum(cacs_act),
+    event_rate = round(mean(cacs_act), 3)
+  )
+```
+
+Simplified NNS calculation
+
+```{r}
+
+library(binom)
+
+# Single unified function for NNS calculation
+calculate_nns <- function(nri_df, biomarker_col = "IGFALS", cutoff = NULL, direction = "lower", confidence_level = 0.95) {
+  # Determine screening strategy
+  if (is.null(cutoff)) {
+    # Scan everyone
+    screened <- rep(TRUE, nrow(nri_df))
+    strategy <- "scan_all"
+  } else {
+    # Selective screening based on biomarker cutoff
+    if (direction == "lower") {
+      print("I ran lower")
+      screened <- nri_df[[biomarker_col]] <= cutoff
+    } else {
+      print("I ran higher")
+      screened <- nri_df[[biomarker_col]] >= cutoff
+    }
+    strategy <- paste0(biomarker_col, "_", cutoff)
+  }
+
+  
+  # Calculate metrics for screened population
+  screened_positive <- sum(screened & nri_df$cacs_act == 1)
+  total_screened <- sum(screened)
+  
+  # Handle edge case where no one is screened
+  if (total_screened == 0) {
+    return(list(
+      strategy = strategy,
+      cutoff = cutoff,
+      total_screened = 0,
+      total_population = nrow(nri_df),
+      screening_rate = 0,
+      ppv = NA,
+      nns = Inf,
+      note = "No individuals meet screening criteria"
+    ))
+  }
+  
+  # Calculate PPV and NNS
+  ppv <- screened_positive / total_screened
+  nns <- 1 / ppv
+  
+  # Calculate Wilson CI for PPV
+  ppv_ci <- binom.confint(x = screened_positive, 
+                          n = total_screened, 
+                          conf.level = confidence_level, 
+                          methods = "wilson")
+  
+  # Convert PPV CI to NNS CI (reciprocal and flip bounds)
+  nns_lower <- 1 / ppv_ci$upper
+  nns_upper <- 1 / ppv_ci$lower
+  
+  # Create results
+  results <- list(
+    strategy = strategy,
+    cutoff = cutoff,
+    total_screened = total_screened,
+    total_population = nrow(nri_df),
+    screening_rate = total_screened / nrow(nri_df),
+    screened_positive = screened_positive,
+    ppv = ppv,
+    ppv_ci_lower = ppv_ci$lower,
+    ppv_ci_upper = ppv_ci$upper,
+    nns = nns,
+    nns_ci_lower = nns_lower,
+    nns_ci_upper = nns_upper,
+    confidence_level = confidence_level
+  )
+  
+  return(results)
+}
+20.827
+20.6139
+test = nri_df %>% filter(gender == "male")
+# Scan everyone:
+results <- calculate_nns(test)
+results
+# IGFALS cutoff:
+results <- calculate_nns(test, cutoff = 20.534)
+results
+
+
+
+```
+```{r}
+graph_df = nri_df_with_model %>%
+  mutate(
+    biomarker_scan = case_when(
+      IGFALS <= 20.534 & gender =="male" ~ 1,
+      IGFALS <= 20.721 & gender == "female" ~ 1,
+      TRUE ~ 0),
+    glm_model_scan = ifelse(model_pred >= 0.0916, 1, 0),
+    all_scan = 1
+  )
+
+# Create the plot with custom colors and blue circles for biomarker_scan = 1
+p = graph_df %>%
+  ggplot() +
+  aes(x = ascvd_10y_accaha, y = log(1+cacs), color = as.character(cacs_act), shape = gender) +
+  geom_point(size = 2) +
+  # Add blue circles around biomarker_scan = 1 points
+  geom_point(data = filter(graph_df, glm_model_scan == 1), 
+             aes(x = ascvd_10y_accaha, y = log(1+cacs)), 
+             color = "#1F77B4", 
+             shape = 1, 
+             size = 4, 
+             stroke = 1.5) +
+  # Custom color scale: grey for cacs_act = 0, red for cacs_act = 1
+  scale_color_manual(values = c("0" = "grey", "1" = "#D62727"),
+                     name = "Actionable (CACS > 100)",
+                     labels = c("0" = "No", "1" = "Yes")) +
+   # Custom shape scale for gender
+  scale_shape_manual(values = c("female" = 16, "male" = 17),
+                     name = "Sex",
+                     labels = c("female" = "Female", "male" = "Male")) +
+  labs(x = "10-Year ASCVD Risk (%)",
+       y = "log(CACS+1)",
+       # title = "Biomarker Screening Performance",
+       # subtitle = "Blue circles indicate biomarker-positive cases (IGFALS ≤ threshold)"
+       ) +
+  theme_bw()
+
+p
+
+ggsave("nns_biomarker_screening_performance.png", plot = p, width = 10, height = 6, dpi = 300)
+
+```
+
+```{r}
+m1 = glm(cacs_act ~ accaha_eth + age + gender + tc + hdl + sbp + as.factor(curr_smok) + as.factor(cvhx_dm) + IGFALS, nri_df, family="binomial")
+predictions <- predict(m1, type = "response")  # This gives probabilities
+summary(m1)
+#extract OR and CI
+ors <- exp(coef(m1))[2:11]
+cis <- exp(confint.default(m1))[2:11,]
+results = cbind(ors, cis)
+1/results[10,]
+
+# Use cutpointr to find optimal cutoff
+# You can choose different metrics and methods
+cp_result <- cutpointr(nri_df_with_model, 
+                       x = predictions,
+                       class = cacs_act,
+                       method = maximize_metric,
+                       pos_class = 1,
+                       direction = ">=",
+                       metric = F1_score,
+                       boot_runs = 100)  # or youden, abs_d_sens_spec, etc.
+
+# Extract optimal cutoff
+optimal_cutoff <- cp_result$optimal_cutpoint
+summary(cp_result)
+
+# View results
+summary(cp_result)
+plot(cp_result)
+
+# Create new dataframe with predictions
+nri_df_with_model <- nri_df
+nri_df_with_model$model_pred <- predictions
+results_model <- calculate_nns(nri_df_with_model, biomarker_col="model_pred", cutoff=0.119199, direction = "higher")
+
+
+
+
+```
+
 
 ```{r}
 score_df %>% 
@@ -2572,7 +4702,9 @@ pheno_df_tbl_summary = pheno_df %>%
     bblocker = as.factor(bblocker),
     ace_arb = as.factor(ace_arb),
     fh_ihd = as.factor(fh_ihd),
-  )
+  ) %>%
+  filter(consensus_class %in% c("reference", "susceptible")) %>%
+  mutate(consensus_class = factor(consensus_class, levels=c("reference", "susceptible")))
 
 rsk_factors <- c("age","smurfs","cvhx_htn","cvhx_dm","cvhx_hcl_sr",
               "signif_smok", "curr_smok", "anti_coag",
@@ -2601,11 +4733,13 @@ pheno_df_tbl_summary = pheno_df_tbl_summary %>%
     ace_arb = "ACE inhibitor / Angiotensin Receptor Blocker",
     #antiinflammatory = "Anti-inflammatory?",
     smurfs = "SMuRFs",
-    SMuRFless = "SMuRFless")
+    SMuRFless = "SMuRFless",
+    cacs.x = "CACS",
+    ascvd_10y_accaha.x = "ASCVD 10y ACC/AHA Risk Score",)
 
 
 gt_res <- pheno_df_tbl_summary %>%
-  dplyr::select(all_of(c("gensini_bin", rsk_factors, "smurfs", "consensus_class"))) %>%
+  dplyr::select(all_of(c("gensini_bin", rsk_factors, "smurfs", "consensus_class", "SMuRFless", "cacs.x", "ascvd_10y_accaha.x"))) %>%
   tbl_summary(by=consensus_class) %>% 
   add_n() %>%
   add_overall() %>%
@@ -2615,7 +4749,7 @@ gt_res <- pheno_df_tbl_summary %>%
 
 gt_res %>%
   gtsummary::as_tibble() %>% 
-  writexl::write_xlsx(., "summary_table.xlsx")
+  writexl::write_xlsx(., "summary_table1.xlsx")
 
 # Export Gtres as pdf
 gt_res %>%
@@ -2631,18 +4765,18 @@ print(gt_res)
 test_df = pheno_df %>%
   left_join(score_df, by="record_id") %>%
   mutate(SMuRFless = ifelse(smurfs == 0, 1, 0)) %>%
-  mutate(weird = ifelse((consensus_class.x == "resilient") & (SMuRFless == 1), TRUE, FALSE))
+  mutate(weird = ifelse((consensus_class == "resilient") & (SMuRFless == 1), TRUE, FALSE))
 
-ggplot(test_df, aes(x = ordernorm_ascvd_10y_frs.x, y = cacs_riskscorecond_pct.x, color = consensus_class.x)) +
+ggplot(test_df, aes(x = ordernorm_ascvd_10y_frs, y = cacs_riskscorecond_pct, color = consensus_class)) +
   # Points for all data
   geom_point(aes(shape = weird), size = 2) +
   
   # Custom shape and color for weird == TRUE
-  geom_point(data = subset(test_df, weird == TRUE), aes(x = ordernorm_ascvd_10y_frs.x, y = cacs_riskscorecond_pct.x), 
+  geom_point(data = subset(test_df, weird == TRUE), aes(x = ordernorm_ascvd_10y_frs, y = cacs_riskscorecond_pct), 
              shape = 17, color = "orange", size = 3) +
   
   # Add labels for points where weird == TRUE
-  geom_text(data = subset(test_df, weird == TRUE), aes(x = ordernorm_ascvd_10y_frs.x, y = cacs_riskscorecond_pct.x, label = record_id), 
+  geom_text(data = subset(test_df, weird == TRUE), aes(x = ordernorm_ascvd_10y_frs, y = cacs_riskscorecond_pct, label = record_id), 
             vjust = -1, hjust = 0.5, color = "orange") +
   
   # Manual color scaling for consensus_class
@@ -2655,11 +4789,18 @@ ggplot(test_df, aes(x = ordernorm_ascvd_10y_frs.x, y = cacs_riskscorecond_pct.x,
        y = "CACS Percentile (Risk Adjusted)", 
        color = "Consensus Class", shape = "Weird")
 
+
+# There are these weird group of "SMuRFless" patients that aren't really SMuRFless (hard to tell) because their SBP is through the roof but counted as cvhx_htn of 0.
+
 pheno_df %>%
   left_join(score_df, by="record_id") %>%
   mutate(SMuRFless = ifelse(smurfs == 0, 1, 0)) %>%
-  filter((consensus_class.x == "resilient") & (SMuRFless == 1)) %>%
-  select(gender, age, HDL_mgdl, Chol_mgdl, sbp, bp_med, curr_smok, cvhx_dm, ascvd_10y_frs.x, ascvd_10y_accaha.x, chd_10y_mesa.x, SCORE2.x, SCORE2_new, consensus_class.x, SMuRFless)
+  filter((consensus_class == "resilient") & (SMuRFless == 1)) %>%
+  select(record_id, age, gender, cacs.x, HDL_mgdl, Chol_mgdl, sbp, bp_med, curr_smok, cvhx_hcl_sr_or_statin, cvhx_htn, cvhx_dm, ascvd_10y_frs.x, ascvd_10y_accaha.x, chd_10y_mesa.x, SCORE2.x, SCORE2_new.x, consensus_class, SMuRFless)
+
+pheno_df %>%
+  select(cvhx_htn, sbp) %>%
+  filter(sbp > 140)
 
 ```
 
@@ -2955,6 +5096,7 @@ snp_score_df = score_df %>%
   inner_join(genotypes, by=c('record_id'='BioHEART_ID')) %>%
   select_if(~ !anyNA(.))
 ```
+
 ```{r}
 snp_score_df %>%
   select(rs186021206, V1)
