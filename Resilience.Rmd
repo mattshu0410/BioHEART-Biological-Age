@@ -54,10 +54,10 @@ load("MultiAssayExperiment_20220816.RData")
 ## Go one folder up from working directory and into another folder 
 
 # Mac
-#data_folder = "/Users/matthewshu/Documents/GitHub-Projects/BioHEART Summer Project/Data"
+data_folder = "/Users/matthewshu/Documents/GitHub-Projects/BioHEART Summer Project/Data"
 
 # Windows
-data_folder = "/Github-Version-Control-Projects/BioHEART-Summer-Project/Data"
+#data_folder = "/Github-Version-Control-Projects/BioHEART-Summer-Project/Data"
 
 # New CACS Data
 BioHRT_dat_new = readxl::read_excel(file.path(data_folder, "DL5_20240829-Full-DI.xlsx"), "values")
@@ -242,6 +242,16 @@ SCORE2OP_10yr= function(gender, age, curr_smok, sbp, dm, tchol, hdl) {
   
   
 }
+
+```
+
+
+
+```{r}
+BioHRT_dat = subset(
+  BioHRT_dat,
+  (gender == 1 & age <= 65) | (gender == 2 & age <= 65)
+)
 
 ```
 
@@ -916,8 +926,8 @@ Fits on Combined Average Normalised Score
 # Fits Zero Inflated model w/ only FRS Score
 
 # 1 dropped because missing either CACS or average_norm_score need to investigate
-score_df = score_df %>% drop_na(gensini, average_norm_score)
-zeroinflmodel = zeroinfl(100*gensini ~ average_norm_score | average_norm_score, data = score_df, dist = "negbin")
+score_df = score_df %>% drop_na(cacs, average_norm_score)
+zeroinflmodel = zeroinfl(100*cacs ~ average_norm_score | average_norm_score, data = score_df, dist = "negbin")
 summary(zeroinflmodel)
 
 score_df %>% select(record_id, average_norm_score) %>% filter(is.na(average_norm_score))
@@ -1155,9 +1165,9 @@ Fits on Traditional Risk Factors
 
 ```{r}
 
-score_df = pheno_df %>% drop_na(gensini, sbp)
-score_df %>% select(gensini, age, gender, Chol_mgdl, HDL_mgdl, sbp, bp_med, curr_smok, cvhx_dm)
-zeroinflmodel = zeroinfl(100*gensini ~ age + gender + Chol_mgdl + HDL_mgdl + sbp + bp_med + curr_smok + cvhx_dm | age + gender + Chol_mgdl + HDL_mgdl + sbp + bp_med + curr_smok + cvhx_dm, data = score_df, dist = "negbin")
+score_df = pheno_df %>% drop_na(cacs, sbp)
+score_df %>% select(cacs, age, gender, Chol_mgdl, HDL_mgdl, sbp, bp_med, curr_smok, cvhx_dm)
+zeroinflmodel = zeroinfl(100*cacs ~ age + gender + Chol_mgdl + HDL_mgdl + sbp + bp_med + curr_smok + cvhx_dm | age + gender + Chol_mgdl + HDL_mgdl + sbp + bp_med + curr_smok + cvhx_dm, data = score_df, dist = "negbin")
 summary(zeroinflmodel)
 
 # Picking Best Fit
@@ -2434,7 +2444,7 @@ score_df$consensus_class = case_when(
 
 score_df %>% dplyr::select(consensus_class, cacs_riskscorecond_pct)
 
-ggplot(score_df, aes(x = age, y = log(gensini+1), color = consensus_class)) +
+ggplot(score_df, aes(x = age, y = log(cacs+1), color = consensus_class)) +
   geom_point() +
   scale_color_manual(values = c("resilient" = "green", "reference" = "blue", "susceptible" = "red", "ignore" = "grey50")) +
   theme_bw() +
@@ -2488,7 +2498,7 @@ score_df$consensus_class_modified <- dplyr::recode(score_df$consensus_class,
 
 # Plot
 p = ggplot(score_df %>% filter(consensus_class != "ignore"), aes(x = age, 
-                     y = log(gensini + 1), 
+                     y = log(cacs + 1), 
                      color = consensus_class_modified)) +
   geom_point() +
   scale_color_manual(values = c("Reference" = "#1F77B4",        # pastel blue
@@ -2502,8 +2512,10 @@ p = ggplot(score_df %>% filter(consensus_class != "ignore"), aes(x = age,
         axis.line.x.top = element_blank(),           # remove top axis line
         axis.line.y.right = element_blank()) +       # remove right axis line
   labs(x = "Age", 
-       y = "log(Gensini + 1)", 
+       y = "log(CACS + 1)", 
        color = "Classification")
+
+plot(p)
 
 ggsave("classification.png", p, width = 8, height = 6, dpi = 300)
 ```
@@ -2614,6 +2626,8 @@ print(p)
 ```{r}
 library(ggpubr)
 library(dplyr)
+score_df
+
 score_df = score_df %>% left_join(prs %>% dplyr::select(-bioheart_id), by="record_id")
 # Create boxplot with statistical comparisons
 p <- ggboxplot(score_df, 
@@ -2687,6 +2701,92 @@ print(p)
 
 # Optional: Save the plot
 ggsave("prs_boxplot_gensini_vs_riskfactors.png", plot = p, width = 10, height = 8, dpi = 300)
+```
+```{r}
+library(dplyr)
+library(ggpubr)
+
+# Define percentile cutoffs
+bottom_10_cutoff <- quantile(score_df$PGS003725, 0.10, na.rm = TRUE)
+top_10_cutoff <- quantile(score_df$PGS003725, 0.90, na.rm = TRUE)
+
+# Create subset with bottom and top 10th percentiles
+score_df_subset <- score_df %>%
+  filter(PGS003725 <= bottom_10_cutoff | PGS003725 >= top_10_cutoff) %>%
+  mutate(PGS_group = ifelse(PGS003725 <= bottom_10_cutoff, 
+                            "Bottom 10%", 
+                            "Top 10%"))
+
+# Perform t-test
+t_test_result <- t.test(cacs_riskscorecond_pct ~ PGS_group, data = score_df_subset)
+print(t_test_result)
+
+# Create boxplot
+p <- ggboxplot(score_df_subset, 
+               x = "PGS_group", 
+               y = "cacs_riskscorecond_pct",
+               fill = "PGS_group",
+               palette = c("Bottom 10%" = "steelblue", "Top 10%" = "coral"),
+               xlab = "PGS003725 Group",
+               ylab = "CACS Risk Score Percentile",
+               title = "CACS Risk Score by PGS003725 Percentile") +
+  stat_compare_means(method = "t.test", 
+                     label = "p.format",
+                     label.x = 1.5,
+                     label.y = max(score_df_subset$cacs_riskscorecond_pct, na.rm = TRUE))
+
+print(p)
+
+```
+```{r}
+library(dplyr)
+library(ggpubr)
+
+# Create quartile groups for all data with ordered factor
+score_df_quartiles <- score_df %>%
+  mutate(PGS_quartile = case_when(
+    PGS003725 <= quantile(PGS003725, 0.25, na.rm = TRUE) ~ "Q1 (Bottom 25%)",
+    PGS003725 <= quantile(PGS003725, 0.50, na.rm = TRUE) ~ "Q2",
+    PGS003725 <= quantile(PGS003725, 0.75, na.rm = TRUE) ~ "Q3",
+    TRUE ~ "Q4 (Top 25%)"
+  )) %>%
+  mutate(PGS_quartile = factor(PGS_quartile, 
+                               levels = c("Q1 (Bottom 25%)", "Q2", "Q3", "Q4 (Top 25%)")))
+
+# ANOVA test
+anova_result <- aov(cacs_riskscorecond_pct ~ PGS_quartile, data = score_df_quartiles)
+summary(anova_result)
+
+# Boxplot with pairwise comparisons
+p <- ggboxplot(score_df_quartiles, 
+               x = "PGS_quartile", 
+               y = "cacs_riskscorecond_pct",
+               fill = "PGS_quartile",
+               palette = "jco",
+               xlab = "PGS003725 Quartile",
+               ylab = "CACS Risk Score Percentile",
+               title = "CACS Risk Score by PGS003725 Quartile") +
+  stat_compare_means(method = "anova", label.y = max(score_df_quartiles$cacs_riskscorecond_pct, na.rm = TRUE) * 1.15) +  # Overall p-value
+  stat_compare_means(comparisons = list(c("Q1 (Bottom 25%)", "Q4 (Top 25%)"),
+                                        c("Q1 (Bottom 25%)", "Q3"),
+                                        c("Q1 (Bottom 25%)", "Q2"),
+                                        c("Q2", "Q4 (Top 25%)"),
+                                        c("Q3", "Q4 (Top 25%)"),
+                                        c("Q2", "Q3")),
+                     method = "t.test",
+                     label = "p.signif")  # Shows *, **, ***, or ns
+
+print(p)
+
+# Optional: Print summary statistics by quartile
+score_df_quartiles %>%
+  group_by(PGS_quartile) %>%
+  summarise(
+    n = n(),
+    mean_cacs = mean(cacs_riskscorecond_pct, na.rm = TRUE),
+    sd_cacs = sd(cacs_riskscorecond_pct, na.rm = TRUE),
+    median_cacs = median(cacs_riskscorecond_pct, na.rm = TRUE)
+  )
 ```
 
 ```{r}
@@ -3199,9 +3299,9 @@ fit = eBayes(fit)
 topTable(fit)
 
 
-#CM = makeContrasts(consensus_classresilient = consensus_classresilient, levels = design)
+CM = makeContrasts(consensus_classresilient = consensus_classresilient, levels = design)
 #CM = makeContrasts(consensus_classcompare = consensus_classsusceptible - consensus_classresilient, levels = design)
-CM = makeContrasts(consensus_classsusceptible = consensus_classsusceptible, levels = design)
+#CM = makeContrasts(consensus_classsusceptible = consensus_classsusceptible, levels = design)
 constrast_fit = contrasts.fit(fit, contrast = CM)
 constrast_fit = eBayes(constrast_fit)
 topTable(constrast_fit, n=500,  confint=TRUE)
