@@ -48,21 +48,27 @@ load("MultiAssayExperiment_20220816.RData")
 ## Go one folder up from working directory and into another folder 
 
 # Mac
-data_folder = "/Users/matthewshu/Documents/GitHub-Projects/BioHEART Summer Project/Data"
+#data_folder = "/Users/matthewshu/Documents/GitHub-Projects/BioHEART Summer Project/Data"
 
 # Windows
-# data_folder = "/Github-Projects/BioHEART-Summer-Project/Data"
+data_folder = "/Github-Projects/BioHEART-Summer-Project/Data"
 
 
+BioHRT_dat_new = readxl::read_excel(file.path(data_folder, "DL5_20240829-Full-DI.xlsx"), "values")
 BioHRT_dat = readxl::read_excel(file.path(data_folder,
                                          "DL4_20230831-BL_Imaging-Omics-20240116_SHU.xlsx"), "nolabel")
 load("FRS_data.RData")
+
+prs = readxl::read_excel(file.path(data_folder, "scoresStandardised-20250811.xlsx"), "scoresStandardised")
 ```
 
 ```{r}
 head(BioHRT_dat)
 BioHRT_dat = BioHRT_dat %>%
-  rename(gender = sex) 
+  rename(gender = sex) %>%
+  left_join(BioHRT_dat_new %>% mutate(record_id = as.numeric(record_id)) %>% select(record_id, cacs_iapl_directimport), by="record_id") %>%
+  mutate(cacs = coalesce(cacs, cacs_iapl_directimport)) %>%
+  left_join(prs %>% dplyr::select(-bioheart_id), by="record_id")
 ```
 
 
@@ -241,7 +247,7 @@ score_df %>%
 
 The following alternative is from Stuart's suggested method to standardise risk scores and take an average where possible.
 
-````{r}
+```{r}
 
 library(caret)
 
@@ -299,6 +305,7 @@ score_df %>%
   
 ```
 
+
 Fits on Combined Average Normalised Score
 
 ```{r}
@@ -310,6 +317,17 @@ score_df = score_df %>% drop_na(cacs, average_norm_score)
 zeroinflmodel = zeroinfl(100*cacs ~ average_norm_score | average_norm_score, data = score_df, dist = "negbin")
 summary(zeroinflmodel)
 
+```
+
+
+Fits on Traditional Risk Factors
+
+```{r}
+
+score_df = pheno_df %>% drop_na(cacs, sbp)
+score_df %>% select(cacs, age, gender, Chol_mgdl, HDL_mgdl, sbp, bp_med, curr_smok, cvhx_dm)
+zeroinflmodel = zeroinfl(100*cacs ~ age + gender + Chol_mgdl + HDL_mgdl + sbp + bp_med + curr_smok + cvhx_dm | age + gender + Chol_mgdl + HDL_mgdl + sbp + bp_med + curr_smok + cvhx_dm, data = score_df, dist = "negbin")
+summary(zeroinflmodel)
 ```
 
 ```{r}
@@ -403,43 +421,39 @@ score_df$consensus_class = case_when(
   TRUE ~ "ignore"
 )
 
-score_df %>% select(consensus_class, cacs_riskscorecond_pct)
+# Modify the factor levels in your dataframe first
+score_df$consensus_class_modified <- dplyr::recode(score_df$consensus_class,
+                                            "reference" = "Reference",
+                                            "susceptible" = "Susceptible",
+                                            "resilient" = "Resilient",
+                                            "ignore" = "Other (Excluded)") 
 
-ggplot(score_df, aes(x = average_norm_score, y = cacs, color = consensus_class)) +
+# Plot
+p = ggplot(score_df %>% filter(consensus_class != "ignore"), aes(x = age, 
+                     y = log(cacs + 1), 
+                     color = consensus_class_modified)) +
   geom_point() +
-  scale_color_manual(values = c("resilient" = "green", "reference" = "blue", "susceptible" = "red", "ignore" = "grey50")) +
+  scale_color_manual(values = c("Reference" = "#1F77B4",        # pastel blue
+                                "Susceptible" = "#D62727",      # pastel red
+                                "Resilient" = "#2ecc71")) +
   theme_bw() +
-  labs(title = "CACS vs Average Normalised Score", x = "Average Normalised Score", y = "CACS", color = "Consensus Class")
+  theme(panel.grid = element_blank(),                # remove gridlines
+        panel.border = element_blank(),              # remove all borders
+        axis.line.x.bottom = element_line(),         # keep bottom x-axis line
+        axis.line.y.left = element_line(),           # keep left y-axis line
+        axis.line.x.top = element_blank(),           # remove top axis line
+        axis.line.y.right = element_blank()) +       # remove right axis line
+  labs(x = "Age", 
+       y = "log(CACS + 1)", 
+       color = "Classification")
 
-score_df %>%
-  select(cacs, average_norm_score, consensus_class) %>%
-  ggplot() +
-  aes(x = average_norm_score , y = log(cacs + 1), color = consensus_class) +
-  geom_point() +
-  theme_bw() +
-  labs(title = "log(CACS+1) vs Average Normalised Score", x = "Average Normalised Score", y = "log(CACS+1)", color = "Consensus Class")
+plot(p)
 
-
-ggplot(score_df, aes(x = average_norm_score , y = cacs_riskscorecond_pct, color = consensus_class)) +
-  geom_point() +
-  scale_color_manual(values = c("resilient" = "green", "reference" = "blue", "susceptible" = "red", "ignore" = "grey50")) +
-  theme_bw() +
-  labs(title = "CACS Percentile (Risk Adjusted) vs Average Normalised Score", x = "Average Normalised Score", y = "CACS Percentile (Risk Adjusted)", color = "Consensus Class")
 
 # Convert to factor for plotting purposes, setting 'reference' as the reference level
 score_df$consensus_class = factor(score_df$consensus_class, levels = c("reference", "resilient", "susceptible", "ignore"))
 
 table(score_df$consensus_class)
-
-# Resilient vs Other
-# score_df = score_df %>%
-#   mutate(consensus_class = case_when(
-#     consensus_class == "ignore" ~ "other",
-#     consensus_class == "reference" ~ "other",
-#     consensus_class == "susceptible" ~ "other",
-#     TRUE ~ "resilient"
-#   ))
-
 
 write.csv(score_df, "resilience.csv")
 ```
@@ -450,6 +464,7 @@ write.csv(score_df, "resilience.csv")
 ```{r, warning=FALSE}
 # Metabolomics
 # Picks the first assay rlmSampleAllShort_H_batch
+assays(metab_exp)
 metab_exp = longFormat(bioheart_mae[,,'Metabolomics'],
                  colDataCols = c("gender","age", "smurfs", "cacs", "cacs_pct", "gensini"),
                  i = 3L)
@@ -663,28 +678,25 @@ topTable(constrast_fit, n=50)
 ```{r, warning=FALSE}
 
 prot_exp = longFormat(bioheart_mae[,,'Proteomics'],
-                 colDataCols = c("age", "smurfs", "cacs", "cacs_pct", "gensini"))
+                      i = "loess_balanced",
+                      colDataCols = c("age", "gender", "smurfs", "cacs", "cacs_pct", "gensini"))
 
 
-prot_df = data.frame(prot_exp) %>%
+
+prot_df = data.frame(prot_exp, check.names=FALSE) %>%
   filter(!grepl("Repeat", colname)) %>%
   filter(primary != "79") %>%
   filter(primary != "Pool") %>%
   filter(primary != "Pool") %>%
-  pivot_wider(id_cols = c(primary, age, smurfs, cacs, cacs_pct, gensini), 
+  pivot_wider(id_cols = c(primary, age, gender, smurfs, cacs, cacs_pct, gensini), 
               names_from = rowname, values_from = value) %>%
-  transform(cacs = as.numeric(cacs), cacs_pct = as.numeric(cacs_pct), gensini = as.numeric(gensini), primary = as.numeric(primary))
+  mutate(
+    cacs = as.numeric(cacs),
+    cacs_pct = as.numeric(cacs_pct),
+    gensini = as.numeric(gensini),
+    primary = as.numeric(primary)
+  )
 
-#score_df %>%
-#  select(ID, consensus_class) %>%
-#  inner_join(prot_df, by=c('ID'='primary')) %>%
-#  filter(consensus_class %in% c("resilient", "reference")) %>%
-#  pivot_longer(cols = -c(ID, consensus_class, age, smurfs, cacs, cacs_pct, gensini), names_to = "proteins", values_to = "value") %>%
-#  ggplot() +
-#  aes(x = proteins, y = value, colour = consensus_class) +
-#  geom_boxplot() +
-#  theme_bw() +
-#  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
 paste(colnames(prot_df), collapse=", ")
 
 write.csv(prot_df, "proteomics.csv")
@@ -696,14 +708,14 @@ write.csv(prot_df, "proteomics.csv")
 ```{r, warning=FALSE}
 
 prot_patient_df = score_df %>%
-  dplyr::select(record_id, consensus_class, average_norm_score) %>%
+  dplyr::select(record_id, consensus_class) %>%
   # Remove outlier 1067
   #filter(record_id != 1067) %>%
   dplyr::inner_join(prot_df, by=c('record_id'='primary'))
 setdiff(score_df$record_id, prot_df$primary)
 
 lm_df = prot_patient_df %>%
-  select(-c(record_id, consensus_class, age, smurfs, cacs, cacs_pct, gensini, average_norm_score)) %>%
+  select(-c(record_id, consensus_class, age, gender, smurfs, cacs, cacs_pct, gensini)) %>%
   t()
 
 design = model.matrix(~ consensus_class, prot_patient_df)
